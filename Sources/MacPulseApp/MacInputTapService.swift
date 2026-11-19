@@ -99,7 +99,7 @@ public final class MacInputTapService {
         let front = NSWorkspace.shared.frontmostApplication
         self.currentBundleID = front?.bundleIdentifier ?? ""
         self.currentAppName = front?.localizedName ?? ""
-        self.eventSource = CGEventSource(stateID: .privateState)
+        self.eventSource = CGEventSource(stateID: .hidSystemState)
     }
 
     deinit {
@@ -127,7 +127,10 @@ public final class MacInputTapService {
         settings = newSettings
         engine.settings = newSettings
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
-        if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
+        if !newSettings.isEnabled {
+            // When user explicitly disables IME, clear per-app state so no app silently re-enables it
+            perAppEnabled.removeAll()
+        } else if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
             perAppEnabled[currentBundleID] = newSettings.isEnabled
         }
         engine.reset()
@@ -280,7 +283,9 @@ public final class MacInputTapService {
             self.currentAppName = name
             self.engine.reset()
             var switchedLanguage: Bool?
-            if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid,
+            // Only apply per-app memory if the IME is currently enabled globally.
+            // If the user turned off the IME, switching apps must NEVER re-enable it automatically!
+            if self.settings.isEnabled && self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid,
                let saved = self.perAppEnabled[bid],
                saved != self.settings.isEnabled {
                 self.settings.isEnabled = saved
@@ -481,6 +486,7 @@ public final class MacInputTapService {
 
         stateLock.lock()
         let hotkey = settings.hotkey
+        let isEnabled = settings.isEnabled
         stateLock.unlock()
 
         if hotkey == .optionZ && keyCode == 0x06 && flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl) {
@@ -490,6 +496,12 @@ public final class MacInputTapService {
         if hotkey == .ctrlSpace && keyCode == 0x31 && flags.contains(.maskControl) && !flags.contains(.maskCommand) && !flags.contains(.maskAlternate) {
             toggleLanguageFromHotkey()
             return nil
+        }
+
+        // Master switch guard: if Vietnamese IME is disabled, pass all keystrokes through immediately.
+        // Zero delay, zero state lock, zero backspace or escape interception.
+        guard isEnabled else {
+            return Unmanaged.passUnretained(event)
         }
 
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskSecondaryFn) {
@@ -553,11 +565,6 @@ public final class MacInputTapService {
         }
 
         stateLock.lock()
-        guard settings.isEnabled else {
-            engine.reset()
-            stateLock.unlock()
-            return Unmanaged.passUnretained(event)
-        }
         let action = engine.processCharacter(ch)
         let bundleID = currentBundleID
         let fixChrome = settings.fixChromiumAutocomplete
@@ -574,7 +581,10 @@ public final class MacInputTapService {
         engine.reset()
         let bid = currentBundleID
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
-        if settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
+        if !nextEnabled {
+            // When turning off, clear per-app state so other apps don't silently re-enable IME
+            perAppEnabled.removeAll()
+        } else if settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
             perAppEnabled[bid] = nextEnabled
         }
         let playSound = settings.soundOnSwitch
@@ -618,38 +628,24 @@ public final class MacInputTapService {
         bundleID: String,
         fixChrome: Bool
     ) {
-        var totalBackspaces = backspaceCount
-        if fixChrome && backspaceCount > 0 && Self.chromiumOrOmniboxBundles.contains(bundleID) {
-            if focusedSelectionLength() > 0 {
-                totalBackspaces += 1
-            }
-        }
-
-        let isTargetHeavyApp = Self.chromiumOrOmniboxBundles.contains(bundleID)
-            || Self.terminalOrEditorBundles.contains(bundleID)
-            || Self.chatAndMessagingBundles.contains(bundleID)
-
-        let bsDelayUsec: useconds_t = isTargetHeavyApp ? 1_800 : 1_200
-        let settleDelayUsec: useconds_t = isTargetHeavyApp ? 3_000 : 2_000
-        let charDelayUsec: useconds_t = isTargetHeavyApp ? 600 : 300
-
-        if totalBackspaces > 0 {
-            for _ in 0..<totalBackspaces {
+        // Fast, deterministic event injection using CGEventPost directly to the HID event tap.
+        // No synchronous Accessibility IPC (which causes hangs, timeouts, and missed keystrokes).
+        if backspaceCount > 0 {
+            for _ in 0..<backspaceCount {
                 if let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x33, keyDown: true) {
                     down.flags = []
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    down.tapPostEvent(proxy)
+                    down.post(tap: .cghidEventTap)
                 }
                 if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x33, keyDown: false) {
                     up.flags = []
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    up.tapPostEvent(proxy)
+                    up.post(tap: .cghidEventTap)
                 }
-                usleep(bsDelayUsec)
+                usleep(600)
             }
-            // Settle pause: allow the target application (Zalo, Telegram, Chrome, etc.)
-            // to update its text storage layout and selection position before injecting characters
-            usleep(settleDelayUsec)
+            // Settle pause to allow target application to process backspace deletions
+            usleep(800)
         }
 
         for char in text {
@@ -658,35 +654,16 @@ public final class MacInputTapService {
                 down.flags = []
                 down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                down.tapPostEvent(proxy)
+                down.post(tap: .cghidEventTap)
             }
             if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) {
                 up.flags = []
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                up.tapPostEvent(proxy)
+                // Attach unicode string to keyUp as well so Cocoa/WebKit text systems commit cleanly
+                up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                up.post(tap: .cghidEventTap)
             }
-            usleep(charDelayUsec)
+            usleep(250)
         }
-    }
-
-    private func focusedSelectionLength() -> Int {
-        let sysWide = AXUIElementCreateSystemWide()
-        var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(sysWide, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
-              let focused = focusedRef else {
-            return 0
-        }
-        let axElement = focused as! AXUIElement
-        var rangeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axElement, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-              let rangeVal = rangeRef,
-              CFGetTypeID(rangeVal) == AXValueGetTypeID() else {
-            return 0
-        }
-        var cfRange = CFRange(location: 0, length: 0)
-        if AXValueGetValue(rangeVal as! AXValue, .cfRange, &cfRange) {
-            return max(0, cfRange.length)
-        }
-        return 0
     }
 }

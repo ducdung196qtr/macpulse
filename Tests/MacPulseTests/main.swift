@@ -394,6 +394,31 @@ suite.test("IME 33: Comprehensive chat words & W-as-Ư tests") {
     }
 }
 
+suite.test("IME 34: aa => â produces exact 1-backspace replacement and disabled mode cleanly bypasses") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    let a1 = eng.processCharacter("a")
+    guard case .passthrough = a1 else {
+        throw TestFailure.failed("First 'a' should be passthrough")
+    }
+    let a2 = eng.processCharacter("a")
+    guard case .replace(let bs, let text) = a2 else {
+        throw TestFailure.failed("Second 'a' should produce replace")
+    }
+    try expectEqual(bs, 1, "Should delete exactly 1 character for aa->â")
+    try expectEqual(text, "â", "Should replace with 'â'")
+
+    let disabledSettings = VietnameseSettings(isEnabled: false)
+    let disabledEng = VietnameseEngine(settings: disabledSettings)
+    let d1 = disabledEng.processCharacter("a")
+    guard case .passthrough = d1 else {
+        throw TestFailure.failed("Disabled engine should pass through 'a'")
+    }
+    let d2 = disabledEng.processCharacter("a")
+    guard case .passthrough = d2 else {
+        throw TestFailure.failed("Disabled engine should pass through 2nd 'a'")
+    }
+}
+
 suite.test("VietnameseSettingsStore persists settings and per-app map") {
     let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: tmpDir) }
