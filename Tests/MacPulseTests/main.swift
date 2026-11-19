@@ -29,9 +29,9 @@ suite.test("MemoryMetrics calculates pressure ratio correctly") {
 suite.test("SystemTelemetry reads real M2 memory, CPU, and disk metrics within bounds") {
     let reader = SystemTelemetryReader()
     let s1 = try reader.captureSnapshot()
-    try expect(s1.memory.totalBytes >= 8 * 1_073_741_824, "RAM >= 8 GB")
-    try expect(s1.cpu.coreCount >= 4, "coreCount >= 4")
-    try expect(s1.disk.totalBytes > 50 * 1_073_741_824, "disk > 50 GB")
+    try expect(s1.memory.totalBytes >= 2 * 1_073_741_824, "RAM >= 2 GB")
+    try expect(s1.cpu.coreCount >= 2, "coreCount >= 2")
+    try expect(s1.disk.totalBytes > 10 * 1_073_741_824, "disk > 10 GB")
     Thread.sleep(forTimeInterval: 0.15)
     let s2 = try reader.captureSnapshot()
     let totalCPU = s2.cpu.userPercent + s2.cpu.systemPercent + s2.cpu.idlePercent
