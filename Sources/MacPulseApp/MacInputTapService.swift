@@ -628,19 +628,19 @@ public final class MacInputTapService {
         bundleID: String,
         fixChrome: Bool
     ) {
-        // Fast, deterministic event injection using CGEventPost directly to the HID event tap.
-        // No synchronous Accessibility IPC (which causes hangs, timeouts, and missed keystrokes).
+        // Direct event injection via the active tap proxy.
+        // Carries Unicode strings directly into the focused window's input context.
         if backspaceCount > 0 {
             for _ in 0..<backspaceCount {
                 if let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x33, keyDown: true) {
                     down.flags = []
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    down.post(tap: .cghidEventTap)
+                    down.tapPostEvent(proxy)
                 }
                 if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x33, keyDown: false) {
                     up.flags = []
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    up.post(tap: .cghidEventTap)
+                    up.tapPostEvent(proxy)
                 }
                 usleep(600)
             }
@@ -654,14 +654,14 @@ public final class MacInputTapService {
                 down.flags = []
                 down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                down.post(tap: .cghidEventTap)
+                down.tapPostEvent(proxy)
             }
             if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) {
                 up.flags = []
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 // Attach unicode string to keyUp as well so Cocoa/WebKit text systems commit cleanly
                 up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                up.post(tap: .cghidEventTap)
+                up.tapPostEvent(proxy)
             }
             usleep(250)
         }
