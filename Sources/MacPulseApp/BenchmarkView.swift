@@ -90,8 +90,15 @@ struct BenchmarkView: View {
                 }
 
                 if vm.benchmarkHistory.count > 1 {
-                    Text("Lịch sử gần đây")
-                        .font(.subheadline.weight(.semibold))
+                    HStack {
+                        Text("Lịch sử gần đây")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Button("Xoá lịch sử") {
+                            vm.clearBenchmarkHistory()
+                        }
+                        .controlSize(.mini)
+                    }
                     ForEach(vm.benchmarkHistory.dropFirst().prefix(5)) { old in
                         HStack {
                             Text(old.timestamp, style: .relative)

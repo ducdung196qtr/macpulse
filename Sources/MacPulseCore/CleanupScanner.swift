@@ -19,44 +19,136 @@ public final class CleanupScanner {
         var results: [CleanupCandidate] = []
 
         let chromePaths = Self.chromeCacheRelativePaths(homeDirectory: homeDirectory)
-        let cacheSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
+
+        // 1. Rác do AI tạo ra (Cursor, Codex, Claude, Gemini, AI Models)
+        let aiSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
+            (
+                "cache-cursor-ai",
+                "Cache & Logs Cursor AI",
+                "Tệp đệm biên dịch, GPU Cache, logs và telemetry tạm thời của Cursor (không mất settings/extension).",
+                [
+                    "Library/Application Support/Cursor/CachedData",
+                    "Library/Application Support/Cursor/CachedExtensionVSIXs",
+                    "Library/Application Support/Cursor/GPUCache",
+                    "Library/Application Support/Cursor/logs",
+                    "Library/Caches/cursor-compile-cache",
+                    ".cursor/ai-tracking"
+                ],
+                true
+            ),
+            (
+                "cache-codex-ai",
+                "Cache & Tệp tạm Codex AI",
+                "Bộ đệm phiên làm việc, tệp tmp và cache dịch vụ Computer Use của Codex (không làm mất prompt/key).",
+                [
+                    ".codex/cache",
+                    ".codex/tmp",
+                    "Library/Caches/Codex",
+                    "Library/Caches/com.openai.codex",
+                    "Library/Caches/com.openai.sky.CUAService"
+                ],
+                true
+            ),
+            (
+                "cache-claude-ai",
+                "Cache & Logs Claude AI",
+                "Bộ đệm cache phản hồi, log và ShipIt của Claude Desktop & Claude Code.",
+                [
+                    ".claude/cache",
+                    ".claude/logs",
+                    "Library/Caches/com.anthropic.claudedesktop",
+                    "Library/Caches/com.anthropic.claudedesktop.ShipIt"
+                ],
+                true
+            ),
+            (
+                "cache-gemini-ai",
+                "Tệp tạm Gemini CLI / Antigravity",
+                "Log phiên chạy, cache npm tool sandbox và các tệp scratch tạm thời của Gemini/Antigravity.",
+                [
+                    ".gemini/logs",
+                    ".cache/opencode-antigravity-npm",
+                    ".cache/opencode"
+                ],
+                true
+            ),
+            (
+                "cache-ai-models",
+                "Mô hình AI tải về & PyTorch Cache",
+                "Cache tải mô hình HuggingFace, Whisper, PyTorch kernels tải về ổ cứng (chỉ tick khi muốn giải phóng ổ cứng).",
+                [
+                    ".cache/huggingface",
+                    ".cache/whisper",
+                    ".cache/torch"
+                ],
+                false
+            )
+        ]
+
+        // 2. Cache Trình duyệt Web
+        let browserSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
             ("cache-chrome", "Cache Google Chrome (Web, GPU/Shader & Service Worker)", "Xoá cache web, GPU/Shader & CacheStorage mọi Profile; giữ nguyên tài khoản, mật khẩu, bookmark & tab.", chromePaths, true),
             ("cache-edge", "Cache Microsoft Edge", "Chỉ xoá file đệm tạm của Edge; giữ nguyên đăng nhập.", ["Library/Caches/Microsoft Edge"], true),
             ("cache-safari", "Cache Safari", "Chỉ xoá file đệm trình duyệt Safari; không mất bookmark/lịch sử.", ["Library/Caches/com.apple.Safari"], true),
-            ("cache-npm", "Cache npm (_cacache)", "Gói tải tạm của npm — tự tải lại nếu chạy npm install.", [".npm/_cacache"], true),
-            ("cache-uv-pip", "Cache Python uv / pip", "Gói tải tạm của uv và pip.", [".cache/uv", ".cache/pip", "Library/Caches/pip"], true),
-            ("cache-yarn-pnpm", "Cache Yarn / pnpm", "Gói tải tạm của Yarn / pnpm.", ["Library/Caches/Yarn", ".cache/yarn", "Library/pnpm/store"], false),
-            ("cache-swiftpm", "Cache Swift Package Manager", "Cache source/manifest của SwiftPM; Xcode/Swift tự tải lại khi build.", ["Library/Caches/org.swift.swiftpm"], true),
-            ("cache-hf", "Cache HuggingFace (~/.cache/huggingface)", "Model AI cache tải về — chỉ tick nếu không còn chạy model AI offline.", [".cache/huggingface"], false),
+            ("cache-arc", "Cache Arc Browser", "Xoá file đệm web & shader của Arc Browser; giữ nguyên tab và Space.", ["Library/Caches/company.thebrowser.Browser"], true)
         ]
 
-        for spec in cacheSpecs {
-            var total: UInt64 = 0
-            var existingPaths: [String] = []
-            for rel in spec.relPaths {
-                let url = homeDirectory.appendingPathComponent(rel)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    let sz = Self.directorySize(at: url)
-                    if sz > 0 {
-                        total += sz
-                        existingPaths.append(url.path)
+        // 3. Cache Lập trình & Build
+        let devSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
+            ("cache-vscode", "Cache Visual Studio Code", "Cache đệm tạm và ShipIt của VS Code; không ảnh hưởng settings/extension.", ["Library/Caches/com.microsoft.VSCode", "Library/Caches/com.microsoft.VSCode.ShipIt"], true),
+            ("cache-homebrew", "Cache Homebrew Cask & Downloads", "Tệp nén .bottle và installer đã tải về của brew; brew tự tải lại khi cần.", ["Library/Caches/Homebrew"], true),
+            ("cache-npm", "Cache npm (_cacache)", "Gói tải tạm của npm — tự tải lại nếu chạy npm install.", [".npm/_cacache"], true),
+            ("cache-uv-pip", "Cache Python uv / pip", "Gói tải tạm của uv và pip.", [".cache/uv", ".cache/pip", "Library/Caches/pip"], true),
+            ("cache-swiftpm", "Cache Swift Package Manager", "Cache source/manifest của SwiftPM; Xcode/Swift tự tải lại khi build.", ["Library/Caches/org.swift.swiftpm"], true),
+            ("cache-xcode-derived", "Xcode DerivedData (Build trung gian)", "Xoá tệp build tạm của Xcode/Swift để giải phóng ổ cứng (Xcode tự build lại khi nhấn Run).", ["Library/Developer/Xcode/DerivedData"], false),
+            ("cache-yarn-pnpm", "Cache Yarn / pnpm", "Gói tải tạm của Yarn / pnpm.", ["Library/Caches/Yarn", ".cache/yarn", "Library/pnpm/store"], false),
+            ("cache-cocoapods", "Cache CocoaPods", "Cache repository và package của CocoaPods.", ["Library/Caches/CocoaPods"], false),
+            ("cache-gradle", "Cache Gradle (~/.gradle/caches)", "Cache dependency của Gradle / Android Studio.", [".gradle/caches"], false),
+            ("cache-docker", "Cache Docker Desktop", "Bộ đệm tạm của Docker Desktop.", ["Library/Caches/com.docker.docker"], false)
+        ]
+
+        // 4. File rác hệ thống
+        let systemSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
+            ("cache-quicklook", "Cache QuickLook Thumbnail", "Bộ đệm hình xem nhanh QuickLook của Finder.", ["Library/Caches/com.apple.QuickLook.thumbnailcache"], true)
+        ]
+
+        func scanGroup(
+            specs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)],
+            category: CleanupCategory
+        ) {
+            for spec in specs {
+                var total: UInt64 = 0
+                var existingPaths: [String] = []
+                for rel in spec.relPaths {
+                    let url = homeDirectory.appendingPathComponent(rel)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        let sz = Self.directorySize(at: url)
+                        if sz > 0 {
+                            total += sz
+                            existingPaths.append(url.path)
+                        }
                     }
                 }
-            }
-            if total >= 64 * 1024, let primary = existingPaths.first {
-                results.append(CleanupCandidate(
-                    id: spec.id,
-                    title: spec.title,
-                    subtitle: spec.subtitle,
-                    path: existingPaths.joined(separator: "|"),
-                    sizeBytes: total,
-                    tier: .safeAutoClean,
-                    method: .clearDirectoryContents,
-                    defaultSelected: spec.defaultChecked && primary.hasPrefix(homeDirectory.path),
-                    category: .cache
-                ))
+                if total >= 64 * 1024, let primary = existingPaths.first {
+                    results.append(CleanupCandidate(
+                        id: spec.id,
+                        title: spec.title,
+                        subtitle: spec.subtitle,
+                        path: existingPaths.joined(separator: "|"),
+                        sizeBytes: total,
+                        tier: .safeAutoClean,
+                        method: .clearDirectoryContents,
+                        defaultSelected: spec.defaultChecked && primary.hasPrefix(homeDirectory.path),
+                        category: category
+                    ))
+                }
             }
         }
+
+        scanGroup(specs: aiSpecs, category: .aiGarbage)
+        scanGroup(specs: browserSpecs, category: .cache)
+        scanGroup(specs: devSpecs, category: .developerBuild)
+        scanGroup(specs: systemSpecs, category: .logsAndTrash)
 
         let localSitesURL = homeDirectory.appendingPathComponent("Local Sites")
         if let siteDirs = try? FileManager.default.contentsOfDirectory(at: localSitesURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {

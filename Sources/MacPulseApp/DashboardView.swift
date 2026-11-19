@@ -53,7 +53,7 @@ struct DashboardView: View {
                 .help("Bấm để mở mục Giải phóng RAM")
 
                 Button {
-                    vm.cleanerFocus = .cache
+                    vm.cleanerFocus = .all
                     vm.selectedTab = .cleaner
                 } label: {
                     MetricTile(
@@ -143,12 +143,12 @@ struct DashboardView: View {
     }
 
     private var topProcessesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Tiến trình & App đang chạy")
                         .font(.subheadline.weight(.semibold))
-                    Text("Rê chuột vào ⓘ để xem đang làm gì & tắt có sao không")
+                    Text("Rê chuột vào ⓘ để xem đang làm gì & an toàn tắt")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -156,13 +156,70 @@ struct DashboardView: View {
                 Button(vm.isScanningTabs ? "Đang quét..." : "Soi tab Chrome") {
                     vm.scanBrowserTabs()
                 }
-                .controlSize(.mini)
+                .controlSize(.small)
                 .disabled(vm.isScanningTabs)
             }
 
-            VStack(spacing: 6) {
-                ForEach(vm.processGroups.prefix(10)) { group in
-                    ProcessRowView(group: group, vm: vm, highlightRAM: false)
+            // Search bar & category filter chips
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    TextField("Tìm kiếm app, tiến trình hoặc PID...", text: $vm.processSearchQuery)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                    if !vm.processSearchQuery.isEmpty {
+                        Button {
+                            vm.processSearchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+
+                // Category chips
+                HStack(spacing: 4) {
+                    ForEach(ProcessFilterCategory.allCases) { cat in
+                        let active = vm.processCategoryFilter == cat
+                        Button {
+                            vm.processCategoryFilter = cat
+                        } label: {
+                            Text(cat.rawValue)
+                                .font(.system(size: 10, weight: active ? .semibold : .medium))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(active ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                                .foregroundStyle(active ? Color.white : Color.primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            let displayList = vm.filteredProcessGroups.prefix(12)
+            if displayList.isEmpty {
+                Text("Không tìm thấy tiến trình nào khớp bộ lọc.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(displayList) { group in
+                        ProcessRowView(group: group, vm: vm, highlightRAM: false)
+                    }
                 }
             }
         }

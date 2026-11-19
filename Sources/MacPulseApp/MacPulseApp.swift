@@ -83,7 +83,7 @@ private struct PopoverRootView: View {
             Divider()
             footerBar
         }
-        .frame(width: 520, height: 630)
+        .frame(width: 535, height: 650)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
             vm.setPopoverVisible(true)
@@ -94,22 +94,24 @@ private struct PopoverRootView: View {
     }
 
     private var customTabBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             ForEach(AppTab.allCases) { tab in
                 let isSelected = vm.selectedTab == tab
                 let showDot = (tab == .vietnamese) && (!vm.isAccessibilityTrusted || !vm.conflictingApps.isEmpty)
                 Button {
                     NSApp.activate(ignoringOtherApps: true)
-                    vm.selectedTab = tab
-                    if tab == .cleaner {
-                        vm.cleanerFocus = .all
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        vm.selectedTab = tab
+                        if tab == .cleaner {
+                            vm.cleanerFocus = .all
+                        }
                     }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: iconForTab(tab))
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 11, weight: .semibold))
                         Text(tab.rawValue)
-                            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
                         if showDot {
                             Circle()
                                 .fill(Color.orange)
@@ -120,11 +122,11 @@ private struct PopoverRootView: View {
                     .padding(.vertical, 6)
                     .padding(.horizontal, 6)
                     .background(
-                        RoundedRectangle(cornerRadius: 7)
+                        RoundedRectangle(cornerRadius: 8)
                             .fill(
                                 isSelected
                                 ? Color.accentColor
-                                : (hoveredTab == tab ? Color.primary.opacity(0.08) : Color.clear)
+                                : (hoveredTab == tab ? Color.primary.opacity(0.06) : Color.clear)
                             )
                     )
                     .foregroundStyle(isSelected ? Color.white : Color.primary)
@@ -139,7 +141,7 @@ private struct PopoverRootView: View {
             }
         }
         .padding(3)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func iconForTab(_ tab: AppTab) -> String {
@@ -153,14 +155,30 @@ private struct PopoverRootView: View {
 
     private var headerBar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "gauge.with.dots.needle.67percent")
-                .font(.title2)
-                .foregroundStyle(statusColor)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("MacPulse")
-                    .font(.headline)
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(0.16))
+                    .frame(width: 32, height: 32)
+                Image(systemName: "gauge.with.dots.needle.67percent")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(statusColor)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("MacPulse")
+                        .font(.system(size: 15, weight: .bold))
+                    if !vm.hardwareModelName.isEmpty {
+                        Text(vm.hardwareModelName)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.primary.opacity(0.06), in: Capsule())
+                    }
+                }
                 Text(vm.healthReport?.statusLabel ?? "Đang phân tích...")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(statusColor)
             }
             Spacer()
@@ -168,30 +186,45 @@ private struct PopoverRootView: View {
             Button {
                 vm.toggleVietnameseEnabled()
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(vm.imeSettings.isEnabled ? Color.blue : Color.gray)
+                        .frame(width: 7, height: 7)
                     Text(vm.imeSettings.isEnabled ? "VI" : "EN")
-                        .font(.caption.bold())
+                        .font(.system(size: 11, weight: .bold))
                     Text(vm.imeSettings.inputMethod == .vni ? "VNI" : (vm.imeSettings.inputMethod == .telex ? "Telex" : "T+V"))
-                        .font(.caption2)
+                        .font(.system(size: 10, weight: .medium))
                         .opacity(0.85)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
                 .background(
-                    (vm.imeSettings.isEnabled ? Color.blue : Color.gray).opacity(0.18),
+                    (vm.imeSettings.isEnabled ? Color.blue : Color.gray).opacity(0.15),
                     in: Capsule()
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(
+                            (vm.imeSettings.isEnabled ? Color.blue : Color.gray).opacity(0.3),
+                            lineWidth: 0.8
+                        )
                 )
             }
             .buttonStyle(.plain)
             .help("Bấm hoặc nhấn \(vm.imeSettings.hotkey.displayName) để chuyển Việt / Anh")
 
             if let report = vm.healthReport {
-                Text("\(report.score)/100")
-                    .font(.headline.monospacedDigit())
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background(statusColor.opacity(0.15), in: Capsule())
-                    .foregroundStyle(statusColor)
+                HStack(spacing: 4) {
+                    Text("\(report.score)")
+                        .font(.system(size: 13, weight: .bold).monospacedDigit())
+                    Text("/100")
+                        .font(.system(size: 10, weight: .medium))
+                        .opacity(0.7)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.15), in: Capsule())
+                .foregroundStyle(statusColor)
             }
         }
         .padding(.horizontal, 14)

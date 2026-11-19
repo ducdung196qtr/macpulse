@@ -6,6 +6,50 @@ public final class SystemTelemetryReader {
 
     public init() {}
 
+    public static func getHardwareModelName() -> String {
+        var size: Int = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        var cpuBrand = ""
+        if size > 0 {
+            var data = [CChar](repeating: 0, count: size)
+            if sysctlbyname("machdep.cpu.brand_string", &data, &size, nil, 0) == 0 {
+                cpuBrand = String(cString: data).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var model = ""
+        if size > 0 {
+            var data = [CChar](repeating: 0, count: size)
+            if sysctlbyname("hw.model", &data, &size, nil, 0) == 0 {
+                model = String(cString: data).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        let friendlyModel: String
+        if model.hasPrefix("Mac14,3") || model.hasPrefix("Mac14,12") {
+            friendlyModel = "Mac mini M2"
+        } else if model.hasPrefix("Macmini") || model.lowercased().contains("mini") {
+            friendlyModel = "Mac mini"
+        } else if model.lowercased().contains("book") {
+            friendlyModel = "MacBook"
+        } else if model.lowercased().contains("imac") {
+            friendlyModel = "iMac"
+        } else if model.lowercased().contains("studio") {
+            friendlyModel = "Mac Studio"
+        } else if model.lowercased().contains("pro") {
+            friendlyModel = "Mac Pro"
+        } else {
+            friendlyModel = model.isEmpty ? "Mac" : model
+        }
+
+        if !cpuBrand.isEmpty {
+            return "\(friendlyModel) • \(cpuBrand)"
+        }
+        return friendlyModel
+    }
+
     public func captureSnapshot() throws -> SystemSnapshot {
         let cpu = readCPU()
         let memory = try readMemory()

@@ -311,16 +311,40 @@ public struct BenchmarkResult: Sendable, Codable, Equatable, Identifiable {
     }
 }
 
-public enum CleanupCategory: String, Sendable, Equatable {
+public enum CleanupCategory: String, Sendable, Equatable, CaseIterable {
+    case aiGarbage
     case cache
+    case developerBuild
     case logsAndTrash
     case storageHeavyData
 
     public var title: String {
         switch self {
-        case .cache: return "Cache (Bộ nhớ đệm tạm trên SSD)"
-        case .logsAndTrash: return "Log phình to & Thùng rác"
-        case .storageHeavyData: return "Dữ liệu & Runtime nặng trên ổ cứng"
+        case .aiGarbage: return "Rác do AI tạo ra (Cursor, Codex, Claude, Gemini)"
+        case .cache: return "Cache Trình duyệt Web (Chrome, Safari, Edge, Arc)"
+        case .developerBuild: return "Cache Lập trình & Build (Xcode, npm, brew, pip)"
+        case .logsAndTrash: return "File Log phình to & Thùng rác"
+        case .storageHeavyData: return "Dữ liệu lớn cần kiểm tra trước (Inspect)"
+        }
+    }
+
+    public var shortTitle: String {
+        switch self {
+        case .aiGarbage: return "Rác AI"
+        case .cache: return "Trình duyệt"
+        case .developerBuild: return "Lập trình"
+        case .logsAndTrash: return "Log & Rác"
+        case .storageHeavyData: return "Bộ nhớ lớn"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .aiGarbage: return "sparkles"
+        case .cache: return "globe"
+        case .developerBuild: return "hammer.fill"
+        case .logsAndTrash: return "doc.text.fill"
+        case .storageHeavyData: return "internaldrive.fill"
         }
     }
 }

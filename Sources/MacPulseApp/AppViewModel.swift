@@ -12,11 +12,36 @@ public enum AppTab: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
-public enum CleanerFocusSection: String, Sendable {
-    case all
-    case ram
-    case cache
-    case storage
+public enum CleanerFocusSection: String, CaseIterable, Identifiable, Sendable {
+    case all = "Tất cả"
+    case ai = "Rác AI"
+    case browser = "Trình duyệt"
+    case developer = "Lập trình"
+    case logs = "Log & Rác"
+    case storage = "Bộ nhớ lớn"
+    case ram = "RAM (Đang chạy)"
+
+    public var id: String { rawValue }
+
+    public var icon: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .ai: return "sparkles"
+        case .browser: return "globe"
+        case .developer: return "hammer.fill"
+        case .logs: return "doc.text.fill"
+        case .storage: return "internaldrive"
+        case .ram: return "memorychip"
+        }
+    }
+}
+
+public enum ProcessFilterCategory: String, CaseIterable, Identifiable, Sendable {
+    case all = "Tất cả"
+    case apps = "Ứng dụng"
+    case background = "Dịch vụ ngầm"
+    case heavy = "Tốn CPU/RAM"
+    public var id: String { rawValue }
 }
 
 @MainActor
@@ -55,6 +80,10 @@ public final class AppViewModel: ObservableObject {
     @Published public var isScanningTabs: Bool = false
     @Published public var showTabInspector: Bool = false
     @Published public var actionNotice: String?
+
+    @Published public var processSearchQuery: String = ""
+    @Published public var processCategoryFilter: ProcessFilterCategory = .all
+    @Published public var hardwareModelName: String = SystemTelemetryReader.getHardwareModelName()
 
     @Published public var pendingTerminationGroup: ProcessGroupSummary?
     @Published public var inspectedGuidanceGroup: ProcessGroupSummary?
@@ -357,8 +386,20 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    public var cacheCandidates: [CleanupCandidate] {
+    public var aiCandidates: [CleanupCandidate] {
+        cleanupCandidates.filter { $0.category == .aiGarbage }
+    }
+
+    public var browserCandidates: [CleanupCandidate] {
         cleanupCandidates.filter { $0.category == .cache }
+    }
+
+    public var developerCandidates: [CleanupCandidate] {
+        cleanupCandidates.filter { $0.category == .developerBuild }
+    }
+
+    public var cacheCandidates: [CleanupCandidate] {
+        cleanupCandidates.filter { $0.category == .cache || $0.category == .aiGarbage || $0.category == .developerBuild }
     }
 
     public var logAndTrashCandidates: [CleanupCandidate] {
@@ -369,6 +410,22 @@ public final class AppViewModel: ObservableObject {
         cleanupCandidates.filter { $0.category == .storageHeavyData }
     }
 
+    public var totalAIGarbageBytes: UInt64 {
+        aiCandidates.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    public var totalBrowserCacheBytes: UInt64 {
+        browserCandidates.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    public var totalDeveloperBuildBytes: UInt64 {
+        developerCandidates.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    public var totalLogsAndTrashBytes: UInt64 {
+        logAndTrashCandidates.reduce(0) { $0 + $1.sizeBytes }
+    }
+
     public var totalSelectedCleanupBytes: UInt64 {
         cleanupCandidates
             .filter { selectedCleanupIDs.contains($0.id) && $0.tier == .safeAutoClean }
@@ -377,7 +434,7 @@ public final class AppViewModel: ObservableObject {
 
     public var totalSafeCacheBytes: UInt64 {
         cleanupCandidates
-            .filter { $0.tier == .safeAutoClean && $0.category == .cache }
+            .filter { $0.tier == .safeAutoClean }
             .reduce(0) { $0 + $1.sizeBytes }
     }
 
@@ -385,6 +442,15 @@ public final class AppViewModel: ObservableObject {
         cleanupCandidates
             .filter { $0.category == .storageHeavyData }
             .reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    public func selectAllSafe() {
+        let safeIDs = Set(cleanupCandidates.filter { $0.tier == .safeAutoClean }.map(\.id))
+        selectedCleanupIDs = safeIDs
+    }
+
+    public func deselectAll() {
+        selectedCleanupIDs = []
     }
 
     public var ramReclaimableGroups: [ProcessGroupSummary] {
@@ -552,7 +618,7 @@ public final class AppViewModel: ObservableObject {
             } else if targetID == "ssd" {
                 cleanerFocus = .storage
             } else {
-                cleanerFocus = .cache
+                cleanerFocus = .all
             }
             selectedTab = .cleaner
         }
@@ -624,5 +690,58 @@ public final class AppViewModel: ObservableObject {
 
     public func revealInFinder(_ path: String) {
         NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+    }
+
+    public var filteredProcessGroups: [ProcessGroupSummary] {
+        processGroups.filter { group in
+            if !processSearchQuery.isEmpty {
+                let q = processSearchQuery.lowercased()
+                let matchesName = group.displayName.lowercased().contains(q)
+                let matchesID = group.id.lowercased().contains(q)
+                let matchesPIDs = group.pids.contains { String($0).contains(q) }
+                if !matchesName && !matchesID && !matchesPIDs {
+                    return false
+                }
+            }
+            switch processCategoryFilter {
+            case .all:
+                return true
+            case .apps:
+                return group.bundleIdentifier != nil && !group.isOrphanAutomation
+            case .background:
+                return group.bundleIdentifier == nil || group.isOrphanAutomation
+            case .heavy:
+                return group.totalCPUPercent >= 15.0 || group.totalRSSBytes >= 500_000_000
+            }
+        }
+    }
+
+    public func cleanAllSafeCaches() {
+        let safeIDs = Set(cleanupCandidates.filter { $0.tier == .safeAutoClean && $0.category == .cache }.map(\.id))
+        guard !safeIDs.isEmpty else { return }
+        selectedCleanupIDs = safeIDs
+        runSelectedCleanup()
+    }
+
+    public func addMacro(key: String, value: String) {
+        let cleanKey = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanVal = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanKey.isEmpty, !cleanVal.isEmpty else { return }
+        imeSettings.macroTable[cleanKey] = cleanVal
+    }
+
+    public func removeMacro(key: String) {
+        imeSettings.macroTable.removeValue(forKey: key.lowercased())
+    }
+
+    public func resetMacrosToDefault() {
+        imeSettings.macroTable = VietnameseSettings.defaultMacroTable
+    }
+
+    public func clearBenchmarkHistory() {
+        try? benchmarkRunner.clearHistory()
+        benchmarkHistory = []
+        latestBenchmark = nil
+        actionNotice = "Đã xoá lịch sử kết quả đo benchmark."
     }
 }

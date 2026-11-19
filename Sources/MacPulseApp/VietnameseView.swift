@@ -3,15 +3,19 @@ import MacPulseCore
 
 struct VietnameseView: View {
     @ObservedObject var vm: AppViewModel
+    @State private var newMacroKey: String = ""
+    @State private var newMacroValue: String = ""
+    @State private var showAddMacroSheet: Bool = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 11) {
+            VStack(alignment: .leading, spacing: 12) {
                 accessibilityBanner
                 conflictBanner
                 systemInputSourceBanner
                 modeAndHotkeyCard
                 optionsCard
+                macroCard
                 scratchpadCard
             }
             .padding(14)
@@ -147,13 +151,18 @@ struct VietnameseView: View {
                         Button {
                             vm.imeSettings.hotkey = hk
                         } label: {
-                            Text(hk.displayName)
-                                .font(.caption.weight(selected ? .semibold : .medium))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 5)
-                                .background(selected ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                                .foregroundStyle(selected ? Color.white : Color.primary)
-                                .contentShape(Rectangle())
+                            HStack(spacing: 4) {
+                                Text(hotkeySymbols(hk))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .opacity(0.85)
+                                Text(hk.displayName)
+                                    .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(selected ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            .foregroundStyle(selected ? Color.white : Color.primary)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -164,16 +173,27 @@ struct VietnameseView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    private func hotkeySymbols(_ hk: VietnameseHotkey) -> String {
+        switch hk {
+        case .ctrlShift: return "⌃ ⇧"
+        case .cmdShift: return "⌘ ⇧"
+        case .optionZ: return "⌥ Z"
+        case .ctrlSpace: return "⌃ ␣"
+        }
+    }
+
     private var optionsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Tuỳ chọn kiểu EVKey")
+            Text("Tuỳ chọn nâng cao kiểu EVKey")
                 .font(.headline)
 
             Toggle("Đặt dấu kiểu mới (hoà, thuý, uỷ)", isOn: $vm.imeSettings.modernOrthography)
                 .font(.subheadline)
-            Toggle("Đặt dấu tự do (gõ dấu sau phụ âm cuối)", isOn: $vm.imeSettings.freeMark)
+            Toggle("Đặt dấu tự do (gõ dấu sau phụ âm cuối: toans -> toán)", isOn: $vm.imeSettings.freeMark)
                 .font(.subheadline)
-            Toggle("Kiểm tra chính tả & bảo vệ từ tiếng Anh", isOn: $vm.imeSettings.spellCheckEnabled)
+            Toggle("Kiểm tra chính tả & bảo vệ từ tiếng Anh (code, URL)", isOn: $vm.imeSettings.spellCheckEnabled)
+                .font(.subheadline)
+            Toggle("Gõ ngoặc [ ] thành ơ, ư (u[ thành ươ, gõ đúp ra ngoặc)", isOn: $vm.imeSettings.bracketShortcuts)
                 .font(.subheadline)
             Toggle("Phím Esc khôi phục từ gốc chưa dấu", isOn: $vm.imeSettings.restoreOnEscape)
                 .font(.subheadline)
@@ -206,10 +226,95 @@ struct VietnameseView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    private var macroCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Bảng gõ tắt (Macro)")
+                        .font(.headline)
+                    Text("Tự mở rộng từ viết tắt khi nhấn Space")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("", isOn: $vm.imeSettings.macroEnabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+
+            if vm.imeSettings.macroEnabled {
+                Divider()
+
+                // Macro input form
+                HStack(spacing: 6) {
+                    TextField("Từ tắt (vd: vn)", text: $newMacroKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    TextField("Thay bằng (vd: Việt Nam)", text: $newMacroValue)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Thêm") {
+                        vm.addMacro(key: newMacroKey, value: newMacroValue)
+                        newMacroKey = ""
+                        newMacroValue = ""
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newMacroKey.trimmingCharacters(in: .whitespaces).isEmpty || newMacroValue.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                // Macro pills grid
+                let sortedKeys = vm.imeSettings.macroTable.keys.sorted()
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 6)], spacing: 6) {
+                    ForEach(sortedKeys, id: \.self) { key in
+                        if let val = vm.imeSettings.macroTable[key] {
+                            HStack(spacing: 4) {
+                                Text(key)
+                                    .font(.caption.bold())
+                                    .foregroundStyle(Color.accentColor)
+                                Text("→ \(val)")
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button {
+                                    vm.removeMacro(key: key)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+
+                HStack {
+                    Text("\(vm.imeSettings.macroTable.count) từ gõ tắt")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Đặt lại mặc định") {
+                        vm.resetMacrosToDefault()
+                    }
+                    .controlSize(.mini)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private var scratchpadCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Gõ thử tại chỗ")
+                Text("Gõ thử trực tiếp")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 if !vm.imeScratchpad.isEmpty {
@@ -218,13 +323,31 @@ struct VietnameseView: View {
                     }
                     .controlSize(.mini)
                 }
-                Text("Đang ở chế độ \(vm.imeSettings.isEnabled ? "Tiếng Việt" : "English")")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(vm.imeSettings.isEnabled ? .blue : .secondary)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(vm.imeSettings.isEnabled ? Color.blue : Color.gray)
+                        .frame(width: 6, height: 6)
+                    Text("Đang ở chế độ \(vm.imeSettings.isEnabled ? "Tiếng Việt (\(vm.imeSettings.inputMethod.displayName))" : "English")")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(vm.imeSettings.isEnabled ? .blue : .secondary)
+                }
             }
-            TextField("Thử gõ: thuongw / tieengs Vieetj (Telex) hoặc thuowng7 / tieeng65 (VNI)...", text: $vm.imeScratchpad)
+            TextField("Gõ thử: thuongw, tieengs Vieetj, m[, thu[cs, vn, ko, dc...", text: $vm.imeScratchpad)
                 .textFieldStyle(.roundedBorder)
                 .font(.subheadline)
+
+            if !vm.imeScratchpad.isEmpty {
+                HStack(spacing: 8) {
+                    Text("Đã gõ: \(vm.imeScratchpad.split(separator: " ").count) từ")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Khôi phục: bấm Esc")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 2)
+            }
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))

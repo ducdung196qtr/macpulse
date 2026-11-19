@@ -328,6 +328,19 @@ suite.test("IME 30: Disabled engine or spellCheckOff behaves predictably") {
     try expectEqual(engNoSpell.simulate("worf "), "wò ")
 }
 
+suite.test("IME 31: Bracket shortcuts [ -> ơ, ] -> ư, u[ -> ươ, and double-tap undo") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, bracketShortcuts: true))
+    try expectEqual(eng.simulate("m[ m] thu[cs th][ngf "), "mơ mư thước thường ")
+    try expectEqual(eng.simulate("m[[ m]] "), "m[ m] ")
+    try expectEqual(eng.simulate("{ } "), "Ơ Ư ")
+}
+
+suite.test("IME 32: Macros / Gõ tắt expands on space and preserves capitalization") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, macroEnabled: true))
+    try expectEqual(eng.simulate("vn hn sg dc ko bt "), "Việt Nam Hà Nội Sài Gòn được không biết ")
+    try expectEqual(eng.simulate("VN HN "), "VIỆT NAM HÀ NỘI ")
+}
+
 
 suite.test("VietnameseSettingsStore persists settings and per-app map") {
     let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -429,19 +442,23 @@ suite.test("HealthAnalyzer surfaces actionable close finding for overloaded user
     try expectEqual(diskFinding?.targetID, "ssd")
 }
 
-suite.test("CleanupScanner separates Cache vs Logs vs Heavy SSD Storage") {
+suite.test("CleanupScanner separates Cache vs Logs vs Heavy SSD Storage and AI Garbage") {
     let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseCatTest-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: tmp) }
     let fm = FileManager.default
     let chromeCache = tmp.appendingPathComponent("Library/Caches/Google/Chrome")
+    let cursorLogs = tmp.appendingPathComponent("Library/Application Support/Cursor/logs")
     let opencodeDir = tmp.appendingPathComponent(".local/share/opencode")
     let localLogDir = tmp.appendingPathComponent("Local Sites/demo/logs")
     try fm.createDirectory(at: chromeCache, withIntermediateDirectories: true)
+    try fm.createDirectory(at: cursorLogs, withIntermediateDirectories: true)
     try fm.createDirectory(at: opencodeDir, withIntermediateDirectories: true)
     try fm.createDirectory(at: localLogDir, withIntermediateDirectories: true)
 
     let payload200KB = Data(repeating: 0x41, count: 200_000)
     try payload200KB.write(to: chromeCache.appendingPathComponent("cache.bin"))
+    let payload100KB = Data(repeating: 0x44, count: 100_000)
+    try payload100KB.write(to: cursorLogs.appendingPathComponent("cursor.log"))
     let payload2MB = Data(repeating: 0x42, count: 2_000_000)
     try payload2MB.write(to: opencodeDir.appendingPathComponent("opencode.db"))
     try payload2MB.write(to: localLogDir.appendingPathComponent("error.log"))
@@ -452,6 +469,10 @@ suite.test("CleanupScanner separates Cache vs Logs vs Heavy SSD Storage") {
     let cacheItem = items.first { $0.id == "cache-chrome" }
     try expectEqual(cacheItem?.category, .cache)
     try expectEqual(cacheItem?.tier, .safeAutoClean)
+
+    let aiItem = items.first { $0.id == "cache-cursor-ai" }
+    try expectEqual(aiItem?.category, .aiGarbage)
+    try expectEqual(aiItem?.tier, .safeAutoClean)
 
     let logItem = items.first { $0.method == .truncateLogFile }
     try expectEqual(logItem?.category, .logsAndTrash)

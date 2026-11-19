@@ -46,6 +46,26 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
     public var fixChromiumAutocomplete: Bool
     public var smartSwitchPerApp: Bool
     public var soundOnSwitch: Bool
+    public var bracketShortcuts: Bool
+    public var macroEnabled: Bool
+    public var macroTable: [String: String]
+
+    public static let defaultMacroTable: [String: String] = [
+        "vn": "Việt Nam",
+        "hn": "Hà Nội",
+        "sg": "Sài Gòn",
+        "dc": "được",
+        "ko": "không",
+        "k": "không",
+        "vs": "với",
+        "bt": "biết",
+        "ng": "người",
+        "tk": "tài khoản",
+        "mk": "mật khẩu",
+        "sdt": "số điện thoại",
+        "sđt": "số điện thoại",
+        "mail": "email"
+    ]
 
     public init(
         isEnabled: Bool = true,
@@ -58,7 +78,10 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         standaloneWAsU: Bool = false,
         fixChromiumAutocomplete: Bool = true,
         smartSwitchPerApp: Bool = true,
-        soundOnSwitch: Bool = true
+        soundOnSwitch: Bool = true,
+        bracketShortcuts: Bool = true,
+        macroEnabled: Bool = true,
+        macroTable: [String: String] = VietnameseSettings.defaultMacroTable
     ) {
         self.isEnabled = isEnabled
         self.inputMethod = inputMethod
@@ -71,6 +94,44 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.fixChromiumAutocomplete = fixChromiumAutocomplete
         self.smartSwitchPerApp = smartSwitchPerApp
         self.soundOnSwitch = soundOnSwitch
+        self.bracketShortcuts = bracketShortcuts
+        self.macroEnabled = macroEnabled
+        self.macroTable = macroTable
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case inputMethod
+        case hotkey
+        case modernOrthography
+        case freeMark
+        case spellCheckEnabled
+        case restoreOnEscape
+        case standaloneWAsU
+        case fixChromiumAutocomplete
+        case smartSwitchPerApp
+        case soundOnSwitch
+        case bracketShortcuts
+        case macroEnabled
+        case macroTable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        self.inputMethod = try container.decodeIfPresent(VietnameseInputMethod.self, forKey: .inputMethod) ?? .telexAndVni
+        self.hotkey = try container.decodeIfPresent(VietnameseHotkey.self, forKey: .hotkey) ?? .ctrlShift
+        self.modernOrthography = try container.decodeIfPresent(Bool.self, forKey: .modernOrthography) ?? true
+        self.freeMark = try container.decodeIfPresent(Bool.self, forKey: .freeMark) ?? true
+        self.spellCheckEnabled = try container.decodeIfPresent(Bool.self, forKey: .spellCheckEnabled) ?? true
+        self.restoreOnEscape = try container.decodeIfPresent(Bool.self, forKey: .restoreOnEscape) ?? true
+        self.standaloneWAsU = try container.decodeIfPresent(Bool.self, forKey: .standaloneWAsU) ?? false
+        self.fixChromiumAutocomplete = try container.decodeIfPresent(Bool.self, forKey: .fixChromiumAutocomplete) ?? true
+        self.smartSwitchPerApp = try container.decodeIfPresent(Bool.self, forKey: .smartSwitchPerApp) ?? true
+        self.soundOnSwitch = try container.decodeIfPresent(Bool.self, forKey: .soundOnSwitch) ?? true
+        self.bracketShortcuts = try container.decodeIfPresent(Bool.self, forKey: .bracketShortcuts) ?? true
+        self.macroEnabled = try container.decodeIfPresent(Bool.self, forKey: .macroEnabled) ?? true
+        self.macroTable = try container.decodeIfPresent([String: String].self, forKey: .macroTable) ?? Self.defaultMacroTable
     }
 }
 
@@ -103,6 +164,8 @@ public final class VietnameseEngine {
         var isUpper: Bool
         var shapeKey: Character? = nil
         var isStandaloneW: Bool = false
+        var isBracketTransform: Bool = false
+        var bracketKey: Character? = nil
     }
 
     private enum ToneAction: Equatable {
@@ -122,6 +185,7 @@ public final class VietnameseEngine {
     private var circumflexUndone: Set<Character> = []
     private var hornUndone: Bool = false
     private var undoneTone: ToneMark? = nil
+    private var bracketUndone: Bool = false
 
     public init(settings: VietnameseSettings = VietnameseSettings()) {
         self.settings = settings
@@ -146,6 +210,7 @@ public final class VietnameseEngine {
         circumflexUndone.removeAll(keepingCapacity: true)
         hornUndone = false
         undoneTone = nil
+        bracketUndone = false
     }
 
     public func processEscape() -> KeyAction {
@@ -220,11 +285,28 @@ public final class VietnameseEngine {
 
     public func processDelimiter(_ char: Character, allowAutoRestore: Bool = true) -> KeyAction {
         defer { reset() }
+        let prevRendered = render(slots: slots, tone: tone)
+        let raw = String(rawKeys)
+
+        // Macros only trigger on whitespace delimiters (Space, Tab, Enter) to avoid corrupting URLs, domains (.vn) and code
+        if settings.macroEnabled && (char == " " || char == "\t" || char == "\n") && !slots.isEmpty && !raw.isEmpty {
+            let lowerRaw = raw.lowercased()
+            if let replacement = settings.macroTable[lowerRaw] {
+                let finalReplacement: String
+                if raw == raw.uppercased() && raw.count > 1 {
+                    finalReplacement = replacement.uppercased()
+                } else if raw.first?.isUppercase == true {
+                    finalReplacement = replacement.prefix(1).uppercased() + replacement.dropFirst()
+                } else {
+                    finalReplacement = replacement
+                }
+                return .replace(backspaceCount: prevRendered.count, text: finalReplacement + String(char))
+            }
+        }
+
         guard allowAutoRestore, settings.spellCheckEnabled, !isRestoredToRaw, !slots.isEmpty else {
             return .passthrough
         }
-        let prevRendered = render(slots: slots, tone: tone)
-        let raw = String(rawKeys)
         guard prevRendered != raw else {
             return .passthrough
         }
@@ -238,6 +320,60 @@ public final class VietnameseEngine {
         guard settings.isEnabled else {
             reset()
             return .passthrough
+        }
+
+        let isBracketChar = (char == "[" || char == "]" || char == "{" || char == "}")
+        let telexEnabled = settings.inputMethod == .telex || settings.inputMethod == .telexAndVni
+
+        if isBracketChar && settings.bracketShortcuts && telexEnabled && !isRestoredToRaw {
+            let isClosing = (char == "]" || char == "}")
+            let isUpper = (char == "{" || char == "}")
+            let prevRendered = render(slots: slots, tone: tone)
+
+            if isClosing {
+                // ']' -> ư, '}' -> Ư
+                // Check double-tap undo
+                if !slots.isEmpty && slots.last?.bracketKey == "]" {
+                    slots.removeLast()
+                    slots.append(CharSlot(base: "]", shape: .plain, isUpper: isUpper))
+                    rawKeys.append(char)
+                    isRestoredToRaw = true
+                    bracketUndone = true
+                    let nextRendered = render(slots: slots, tone: tone)
+                    return diffAction(from: prevRendered, to: nextRendered)
+                }
+
+                slots.append(CharSlot(base: "u", shape: .horn, isUpper: isUpper, isBracketTransform: true, bracketKey: "]"))
+                rawKeys.append(char)
+                let nextRendered = render(slots: slots, tone: tone)
+                return diffAction(from: prevRendered, to: nextRendered)
+            } else {
+                // '[' -> ơ, '{' -> Ơ
+                // Check double-tap undo
+                if !slots.isEmpty && slots.last?.bracketKey == "[" {
+                    slots.removeLast()
+                    slots.append(CharSlot(base: "[", shape: .plain, isUpper: isUpper))
+                    rawKeys.append(char)
+                    isRestoredToRaw = true
+                    bracketUndone = true
+                    let nextRendered = render(slots: slots, tone: tone)
+                    return diffAction(from: prevRendered, to: nextRendered)
+                }
+
+                // If preceding slot was plain 'u', convert 'u' -> 'ư' and add 'ơ' -> 'ươ'
+                if !slots.isEmpty && slots.last?.base == "u" && slots.last?.shape == .plain {
+                    slots[slots.count - 1].shape = .horn
+                    slots.append(CharSlot(base: "o", shape: .horn, isUpper: isUpper, isBracketTransform: true, bracketKey: "["))
+                    rawKeys.append(char)
+                    let nextRendered = render(slots: slots, tone: tone)
+                    return diffAction(from: prevRendered, to: nextRendered)
+                }
+
+                slots.append(CharSlot(base: "o", shape: .horn, isUpper: isUpper, isBracketTransform: true, bracketKey: "["))
+                rawKeys.append(char)
+                let nextRendered = render(slots: slots, tone: tone)
+                return diffAction(from: prevRendered, to: nextRendered)
+            }
         }
 
         let lowerStr = char.lowercased()
