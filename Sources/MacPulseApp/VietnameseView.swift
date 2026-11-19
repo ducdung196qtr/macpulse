@@ -51,8 +51,16 @@ struct VietnameseView: View {
         }
         .padding(10)
         .background(
-            (vm.isAccessibilityTrusted ? Color.green : Color.orange).opacity(0.12),
-            in: RoundedRectangle(cornerRadius: 8)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                RoundedRectangle(cornerRadius: 8)
+                    .fill((vm.isAccessibilityTrusted ? Color.green : Color.orange).opacity(0.06))
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder((vm.isAccessibilityTrusted ? Color.green : Color.orange).opacity(0.25), lineWidth: 1)
         )
     }
 
@@ -78,7 +86,18 @@ struct VietnameseView: View {
                 .controlSize(.small)
             }
             .padding(10)
-            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.red.opacity(0.06))
+                }
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.red.opacity(0.28), lineWidth: 1)
+            )
         }
     }
 
@@ -93,7 +112,18 @@ struct VietnameseView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(9)
-            .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.blue.opacity(0.06))
+                }
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.blue.opacity(0.22), lineWidth: 1)
+            )
         }
     }
 

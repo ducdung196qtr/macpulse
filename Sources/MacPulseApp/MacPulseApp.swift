@@ -65,7 +65,18 @@ private struct PopoverRootView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.blue.opacity(0.06))
+                    }
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.blue.opacity(0.22), lineWidth: 1)
+                )
                 .padding(.horizontal, 14)
                 .padding(.bottom, 6)
             }
@@ -84,6 +95,7 @@ private struct PopoverRootView: View {
             footerBar
         }
         .frame(width: 535, height: 650)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
             vm.setPopoverVisible(true)

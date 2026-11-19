@@ -138,7 +138,18 @@ struct CleanerView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(9)
-                .background(Color.purple.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.purple.opacity(0.05))
+                    }
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.purple.opacity(0.20), lineWidth: 1)
+                )
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 5) {
@@ -157,7 +168,18 @@ struct CleanerView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(9)
-                .background(Color.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.blue.opacity(0.05))
+                    }
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.blue.opacity(0.20), lineWidth: 1)
+                )
             }
 
             HStack {
@@ -409,10 +431,17 @@ struct CleanerView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color.blue.opacity(0.04))
+            }
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
+                .strokeBorder(Color.blue.opacity(0.22), lineWidth: 1)
         )
     }
 

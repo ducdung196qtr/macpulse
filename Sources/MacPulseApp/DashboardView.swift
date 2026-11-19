@@ -99,42 +99,69 @@ struct DashboardView: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.green.opacity(0.25), lineWidth: 1)
+                    )
                 } else {
                     ForEach(report.findings) { item in
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: item.severity == .critical ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
-                                    .foregroundStyle(item.severity == .critical ? .red : .orange)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.title)
-                                        .font(.subheadline.weight(.semibold))
-                                    Text(item.detail)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                        let isCrit = item.severity == .critical
+                        let accentColor: Color = isCrit ? .red : .orange
+
+                        HStack(alignment: .top, spacing: 10) {
+                            // Left accent indicator strip for quick glance
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(accentColor)
+                                .frame(width: 3)
+                                .padding(.vertical, 2)
+
+                            Image(systemName: isCrit ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(accentColor)
+                                .padding(.top, 1)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+
+                                Text(item.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                if !item.impactNote.isEmpty {
+                                    Text(item.impactNote)
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(isCrit ? Color.red.opacity(0.9) : Color.orange.opacity(0.95))
                                         .fixedSize(horizontal: false, vertical: true)
-                                    if !item.impactNote.isEmpty {
-                                        Text(item.impactNote)
-                                            .font(.caption2)
-                                            .foregroundStyle(.blue)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
                                 }
-                                Spacer()
-                                if item.recommendedAction != .none {
-                                    Button(item.actionLabel ?? "Xử lý") {
-                                        vm.performRecommendedAction(item.recommendedAction, targetID: item.targetID)
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(item.severity == .critical ? .red : .orange)
-                                    .controlSize(.small)
+                            }
+
+                            Spacer(minLength: 4)
+
+                            if item.recommendedAction != .none {
+                                Button(item.actionLabel ?? "Xử lý") {
+                                    vm.performRecommendedAction(item.recommendedAction, targetID: item.targetID)
                                 }
+                                .buttonStyle(.borderedProminent)
+                                .tint(accentColor)
+                                .controlSize(.small)
                             }
                         }
                         .padding(10)
                         .background(
-                            (item.severity == .critical ? Color.red : Color.orange).opacity(0.09),
-                            in: RoundedRectangle(cornerRadius: 8)
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(accentColor.opacity(0.04))
+                            }
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(accentColor.opacity(0.25), lineWidth: 1)
                         )
                     }
                 }
