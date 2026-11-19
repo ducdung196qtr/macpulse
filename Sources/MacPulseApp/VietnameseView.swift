@@ -1,0 +1,232 @@
+import SwiftUI
+import MacPulseCore
+
+struct VietnameseView: View {
+    @ObservedObject var vm: AppViewModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 11) {
+                accessibilityBanner
+                conflictBanner
+                systemInputSourceBanner
+                modeAndHotkeyCard
+                optionsCard
+                scratchpadCard
+            }
+            .padding(14)
+        }
+        .onAppear {
+            vm.refreshIMEEnvironment()
+        }
+    }
+
+    @ViewBuilder
+    private var accessibilityBanner: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: vm.isAccessibilityTrusted ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
+                .font(.title3)
+                .foregroundStyle(vm.isAccessibilityTrusted ? .green : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(vm.isAccessibilityTrusted ? "Bộ gõ cấp hệ thống đã sẵn sàng" : "Cần cấp quyền Trợ năng (Accessibility)")
+                    .font(.subheadline.weight(.semibold))
+                Text(vm.imeStatusSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            if !vm.isAccessibilityTrusted {
+                Button("Cấp quyền") {
+                    vm.requestAccessibilityPermission()
+                    vm.openAccessibilitySettings()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(
+            (vm.isAccessibilityTrusted ? Color.green : Color.orange).opacity(0.12),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+    }
+
+    @ViewBuilder
+    private var conflictBanner: some View {
+        if !vm.conflictingApps.isEmpty {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Phát hiện bộ gõ khác đang chạy song song")
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(vm.conflictingApps.map(\.name).joined(separator: ", ")) đang hoạt động. Tắt để tránh gõ đúp dấu.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Tắt ngay") {
+                    vm.terminateConflictingInputApps()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.small)
+            }
+            .padding(10)
+            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private var systemInputSourceBanner: some View {
+        if vm.isSystemVietnameseInputSourceActive {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(.blue)
+                Text("Bàn phím macOS hiện đang chọn nguồn \(vm.systemInputSourceID). Hãy chuyển thanh input menu của macOS về ABC / U.S. để MacPulse gõ mượt như EVKey.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(9)
+            .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var modeAndHotkeyCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { vm.imeSettings.isEnabled },
+                    set: { val in
+                        if val != vm.imeSettings.isEnabled { vm.toggleVietnameseEnabled() }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Bật gõ Tiếng Việt kiểu EVKey")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Bắt phím trực tiếp bằng CGEventTap (0 thư viện ngoài)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+
+            Divider()
+
+            HStack {
+                Text("Kiểu gõ")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                HStack(spacing: 4) {
+                    ForEach(VietnameseInputMethod.allCases) { method in
+                        let selected = vm.imeSettings.inputMethod == method
+                        Button {
+                            vm.imeSettings.inputMethod = method
+                        } label: {
+                            Text(method.displayName)
+                                .font(.caption.weight(selected ? .semibold : .medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(selected ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                                .foregroundStyle(selected ? Color.white : Color.primary)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Phím chuyển Việt / Anh")
+                    .font(.subheadline.weight(.medium))
+                HStack(spacing: 6) {
+                    ForEach(VietnameseHotkey.allCases) { hk in
+                        let selected = vm.imeSettings.hotkey == hk
+                        Button {
+                            vm.imeSettings.hotkey = hk
+                        } label: {
+                            Text(hk.displayName)
+                                .font(.caption.weight(selected ? .semibold : .medium))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 5)
+                                .background(selected ? Color.accentColor : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                                .foregroundStyle(selected ? Color.white : Color.primary)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var optionsCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Tuỳ chọn kiểu EVKey")
+                .font(.headline)
+
+            Toggle("Đặt dấu kiểu mới (hoà, thuý, uỷ)", isOn: $vm.imeSettings.modernOrthography)
+                .font(.subheadline)
+            Toggle("Đặt dấu tự do (gõ dấu sau phụ âm cuối)", isOn: $vm.imeSettings.freeMark)
+                .font(.subheadline)
+            Toggle("Kiểm tra chính tả & bảo vệ từ tiếng Anh", isOn: $vm.imeSettings.spellCheckEnabled)
+                .font(.subheadline)
+            Toggle("Phím Esc khôi phục từ gốc chưa dấu", isOn: $vm.imeSettings.restoreOnEscape)
+                .font(.subheadline)
+            Toggle("Vá thanh địa chỉ Chrome / Safari / Spotlight", isOn: $vm.imeSettings.fixChromiumAutocomplete)
+                .font(.subheadline)
+            Toggle("Âm báo nhẹ khi bấm chuyển Việt / Anh", isOn: $vm.imeSettings.soundOnSwitch)
+                .font(.subheadline)
+            Toggle("Nhớ Việt / Anh theo từng ứng dụng (Smart Switch)", isOn: $vm.imeSettings.smartSwitchPerApp)
+                .font(.subheadline)
+            Toggle("Gõ W đứng đầu thành Ư (tắt để gõ www thoải mái)", isOn: $vm.imeSettings.standaloneWAsU)
+                .font(.subheadline)
+
+            if vm.imeSettings.smartSwitchPerApp {
+                HStack {
+                    Text("App gần nhất: \(vm.frontmostAppName.isEmpty ? "MacPulse" : vm.frontmostAppName) • Đã nhớ \(vm.perAppCount) app")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if vm.perAppCount > 0 {
+                        Button("Xoá nhớ app") {
+                            vm.clearPerAppMemory()
+                        }
+                        .controlSize(.mini)
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var scratchpadCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Gõ thử tại chỗ")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if !vm.imeScratchpad.isEmpty {
+                    Button("Xoá chữ") {
+                        vm.imeScratchpad = ""
+                    }
+                    .controlSize(.mini)
+                }
+                Text("Đang ở chế độ \(vm.imeSettings.isEnabled ? "Tiếng Việt" : "English")")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(vm.imeSettings.isEnabled ? .blue : .secondary)
+            }
+            TextField("Thử gõ: thuongw / tieengs Vieetj (Telex) hoặc thuowng7 / tieeng65 (VNI)...", text: $vm.imeScratchpad)
+                .textFieldStyle(.roundedBorder)
+                .font(.subheadline)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
