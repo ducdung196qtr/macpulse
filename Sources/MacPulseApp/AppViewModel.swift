@@ -602,8 +602,15 @@ public final class AppViewModel: ObservableObject {
         case .none:
             break
         case .killOrphanPuppeteer:
+            let hadNormalChrome = processGroups.contains { $0.id == "app:Google Chrome" && !$0.isOrphanAutomation }
             let res = CleanupExecutor.terminateOrphanPuppeteerProcesses()
-            actionNotice = "Đã tắt \(res.killed.count) tiến trình Chrome headless dư thừa."
+            actionNotice = "Đã tắt \(res.killed.count) tiến trình Chrome headless ngầm."
+            if !hadNormalChrome {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                proc.arguments = ["-a", "Google Chrome"]
+                try? proc.run()
+            }
             refreshAfterDelay()
         case .quitAppGracefully, .terminateUserProcess:
             if let group = processGroups.first(where: { $0.id == targetID }) {

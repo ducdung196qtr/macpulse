@@ -88,6 +88,19 @@ public enum CleanupExecutor {
             }
         }
 
+        if candidates.contains(where: { $0.id == "cache-chrome" }) {
+            // Unblock Chrome: clean broken SingletonLock/DevToolsActivePort and terminate orphan headless Chrome blockers
+            for lockURL in chromeLockPaths(homeDirectory: homeDirectory) {
+                guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) else { continue }
+                var st = Darwin.stat()
+                if lstat(lockURL.path, &st) == 0 {
+                    _ = Darwin.unlink(lockURL.path)
+                    try? fm.removeItem(at: lockURL)
+                }
+            }
+            _ = terminateOrphanPuppeteerProcesses(force: false)
+        }
+
         return CleanupOutcome(freedBytes: freed, processedCount: count, errors: errors)
     }
 

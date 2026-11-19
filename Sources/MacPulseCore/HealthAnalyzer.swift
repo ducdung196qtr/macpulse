@@ -47,17 +47,26 @@ public enum HealthAnalyzer {
         }
 
         if let orphan = processGroups.first(where: { $0.isOrphanAutomation }) {
+            let hasLiveGUIChrome = processGroups.contains { $0.id == "app:Google Chrome" && !$0.isOrphanAutomation }
             score -= 15
+            let title = hasLiveGUIChrome
+                ? "Chrome automation chạy ngầm (\(Formatters.bytes(orphan.totalRSSBytes)))"
+                : "Chrome bị chặn mở bởi tiến trình ngầm (\(Formatters.bytes(orphan.totalRSSBytes)))"
+            let detail = hasLiveGUIChrome
+                ? "Tiến trình Chrome headless/automation (Playwright/Puppeteer/Bot) đang chạy ngầm (\(Int(orphan.totalCPUPercent))% CPU)."
+                : "Phát hiện tiến trình Chrome headless ngầm (OpenMausBot/Playwright/AI) đang chiếm quyền của Google Chrome, khiến macOS từ chối mở cửa sổ Chrome."
+            let actionLabel = hasLiveGUIChrome ? "Dọn ngay" : "Gỡ kẹt & Mở Chrome"
+
             findings.append(DiagnosticFinding(
                 id: "orphan-puppeteer",
                 severity: .warning,
-                title: "Chrome automation chạy ngầm (\(Formatters.bytes(orphan.totalRSSBytes)))",
-                detail: "Tiến trình Chrome headless/automation (Playwright/Puppeteer/MCP) đang chạy ngầm (\(Int(orphan.totalCPUPercent))% CPU) và có thể chặn mở Chrome.",
+                title: title,
+                detail: detail,
                 recommendedAction: .killOrphanPuppeteer,
                 targetID: orphan.id,
                 safetyLevel: .safeNow,
-                impactNote: "An toàn 100%: Không làm đóng cửa sổ Google Chrome bạn đang sử dụng.",
-                actionLabel: "Dọn ngay"
+                impactNote: "An toàn 100%: Tắt tiến trình bot ngầm để giải phóng Google Chrome và mở lại bình thường.",
+                actionLabel: actionLabel
             ))
         }
 

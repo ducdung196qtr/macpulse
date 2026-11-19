@@ -213,15 +213,25 @@ public enum ProcessScanner {
 
     public static func aggregate(_ processes: [RawProcessInfo]) -> [ProcessGroupSummary] {
         var orphanPIDs = Set<Int32>()
+        var orphanProfileDirs = Set<String>()
+
         for p in processes where isOrphanPuppeteerCommand(p.args) {
             orphanPIDs.insert(p.pid)
+            if let profileDir = extractUserDataDir(from: p.args) {
+                orphanProfileDirs.insert(profileDir)
+            }
         }
         var changed = true
         while changed {
             changed = false
-            for p in processes where !orphanPIDs.contains(p.pid) && orphanPIDs.contains(p.ppid) {
-                orphanPIDs.insert(p.pid)
-                changed = true
+            for p in processes where !orphanPIDs.contains(p.pid) {
+                let lowerArgs = p.args.lowercased()
+                let matchesParent = orphanPIDs.contains(p.ppid)
+                let matchesProfile = !orphanProfileDirs.isEmpty && orphanProfileDirs.contains { lowerArgs.contains($0) }
+                if matchesParent || matchesProfile {
+                    orphanPIDs.insert(p.pid)
+                    changed = true
+                }
             }
         }
 
@@ -327,6 +337,9 @@ public enum ProcessScanner {
         if lower.contains("playwright_chromiumdev_profile") {
             return true
         }
+        if lower.contains("openmausbot") || lower.contains("agent-browser-profiles") {
+            return true
+        }
         let isChromeBinary = lower.contains("/applications/google chrome.app/") || lower.contains("google chrome.app/contents/")
         let isHeadlessFlag = lower.contains("--headless")
         let isAutomationFlag = lower.contains("--no-startup-window")
@@ -336,7 +349,17 @@ public enum ProcessScanner {
             || lower.contains("playwright")
             || lower.contains("puppeteer")
             || lower.contains("chrome-devtools-mcp")
+            || lower.contains("openmausbot")
         return isChromeBinary && isHeadlessFlag && isAutomationFlag
+    }
+
+    private static func extractUserDataDir(from args: String) -> String? {
+        let pattern = "--user-data-dir="
+        guard let range = args.range(of: pattern) else { return nil }
+        let sub = args[range.upperBound...]
+        let token = sub.components(separatedBy: " ").first?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let token, !token.isEmpty else { return nil }
+        return token.lowercased()
     }
 
     public static func isAnyGoogleChromeProcess(_ proc: RawProcessInfo) -> Bool {
