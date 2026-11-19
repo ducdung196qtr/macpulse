@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="1.1.0"
+RAW_VER="${1:-${GITHUB_REF_NAME:-$(git describe --tags --exact-match 2>/dev/null || echo "1.1.1")}}"
+VERSION="${RAW_VER#v}"
 DMG_NAME="MacPulse-v${VERSION}-macOS.dmg"
 ZIP_NAME="MacPulse-v${VERSION}-macOS.zip"
 DIST_DIR="$ROOT/dist"
