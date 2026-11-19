@@ -36,6 +36,21 @@ public final class MacInputTapService {
         "com.raycast.macos"
     ]
 
+    private static let chatAndMessagingBundles: Set<String> = [
+        "com.vng.zalo",
+        "ru.keepcoder.Telegram",
+        "org.telegram.desktop",
+        "com.facebook.archon",
+        "com.tinyspeck.slackmacgap",
+        "com.hnc.Discord",
+        "com.apple.MobileSMS",
+        "com.apple.Notes",
+        "com.skype.skype",
+        "com.microsoft.Word",
+        "com.microsoft.teams",
+        "com.microsoft.teams2"
+    ]
+
     private static let terminalOrEditorBundles: Set<String> = [
         "com.apple.Terminal",
         "com.googlecode.iterm2",
@@ -610,8 +625,13 @@ public final class MacInputTapService {
             }
         }
 
-        let needsMicroDelay = Self.chromiumOrOmniboxBundles.contains(bundleID) || Self.terminalOrEditorBundles.contains(bundleID)
-        let delayUsec: useconds_t = needsMicroDelay ? 450 : 120
+        let isTargetHeavyApp = Self.chromiumOrOmniboxBundles.contains(bundleID)
+            || Self.terminalOrEditorBundles.contains(bundleID)
+            || Self.chatAndMessagingBundles.contains(bundleID)
+
+        let bsDelayUsec: useconds_t = isTargetHeavyApp ? 1_800 : 1_200
+        let settleDelayUsec: useconds_t = isTargetHeavyApp ? 3_000 : 2_000
+        let charDelayUsec: useconds_t = isTargetHeavyApp ? 600 : 300
 
         if totalBackspaces > 0 {
             for _ in 0..<totalBackspaces {
@@ -625,8 +645,11 @@ public final class MacInputTapService {
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
                 }
-                usleep(delayUsec)
+                usleep(bsDelayUsec)
             }
+            // Settle pause: allow the target application (Zalo, Telegram, Chrome, etc.)
+            // to update its text storage layout and selection position before injecting characters
+            usleep(settleDelayUsec)
         }
 
         for char in text {
@@ -642,9 +665,7 @@ public final class MacInputTapService {
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 up.tapPostEvent(proxy)
             }
-            if needsMicroDelay {
-                usleep(delayUsec)
-            }
+            usleep(charDelayUsec)
         }
     }
 

@@ -628,7 +628,22 @@ public final class VietnameseEngine {
         let isVNI7 = (lower == "7")
         let isVNI8 = (lower == "8")
         let sInfo = analyzeSyllable(slots)
-        guard !sInfo.vowelRange.isEmpty else { return nil }
+
+        // When vowel is empty and user types 'w' in Telex after a valid onset (e.g. 'ch' + 'w' -> 'chư', 't' + 'w' -> 'tư')
+        if sInfo.vowelRange.isEmpty {
+            let telexEnabled = settings.inputMethod == .telex || settings.inputMethod == .telexAndVni
+            guard telexEnabled && lower == "w" && !slots.isEmpty && sInfo.codaRange.isEmpty else {
+                return nil
+            }
+            let onsetStr = renderSlice(slots[sInfo.onsetRange])
+            guard Self.validOnsets.contains(onsetStr) && onsetStr != "q" else {
+                return nil
+            }
+            slots.append(CharSlot(base: "u", shape: .horn, isUpper: char.isUppercase, isStandaloneW: true))
+            rawKeys.append(char)
+            let nextRendered = render(slots: slots, tone: tone)
+            return diffAction(from: prevRendered, to: nextRendered)
+        }
 
         if !settings.freeMark {
             let lastVowel = sInfo.vowelRange.upperBound - 1
@@ -949,6 +964,7 @@ public final class VietnameseEngine {
 
     /// Composing prefixes allowed mid-word before user presses the circumflex/horn key (e.g. 't-i-e-n-g-s' -> 't-i-ê-n-g-s')
     private static let composingOnlyRhymes: Set<String> = [
+        "ic", "uyc", "yc", "oon",
         "ie", "iec", "iem", "ien", "ieng", "iep", "iet", "ieu",
         "uo", "uoc", "uom", "uon", "uong", "uop", "uot", "uoi", "uou",
         "uye", "uyen", "uyet",

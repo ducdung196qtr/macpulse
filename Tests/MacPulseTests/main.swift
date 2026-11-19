@@ -342,6 +342,58 @@ suite.test("IME 32: Macros / Gõ tắt expands on space and preserves capitaliza
 }
 
 
+suite.test("IME 33: Comprehensive chat words & W-as-Ư tests") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telexAndVni))
+    let cases: [(input: String, expected: String)] = [
+        ("em thichs anh ", "em thích anh "),
+        ("thichs ", "thích "),
+        ("thisch ", "thích "),
+        ("lichj ", "lịch "),
+        ("tichs ", "tích "),
+        ("nghijch ", "nghịch "),
+        ("chinhs ", "chính "),
+        ("minhf ", "mình "),
+        ("tinhs ", "tính "),
+        ("hinhf ", "hình "),
+        ("huychs ", "huých "),
+        ("chws ", "chứ "),
+        ("chwx ", "chữ "),
+        ("chwa ", "chưa "),
+        ("nhw ", "như "),
+        ("nhwngx ", "những "),
+        ("nhwng ", "nhưng "),
+        ("thws ", "thứ "),
+        ("thwr ", "thử "),
+        ("tws ", "tứ "),
+        ("twf ", "từ "),
+        ("swr ", "sử "),
+        ("swj ", "sự "),
+        ("bwax ", "bữa "),
+        ("mwa ", "mưa "),
+        ("ddwa ", "đưa "),
+        ("trwf ", "trừ "),
+        ("trwjc ", "trực "),
+        ("ddwngs ", "đứng "),
+        ("ddwngf ", "đừng "),
+        ("mwngf ", "mừng "),
+        ("dduwcs ", "đức "),
+        ("thwcs ", "thức "),
+        ("ngwoif ", "người "),
+        ("cuwoif ", "cười "),
+        ("tuwoi ", "tươi "),
+        ("tuwois ", "tưới "),
+        ("muwoif ", "mười "),
+        ("chats ", "chát "),
+        ("chast ", "chát "),
+        ("gox tieengs Vieejt chuaanr EVKey ", "gõ tiếng Việt chuẩn EVKey ")
+    ]
+
+    for c in cases {
+        let got = eng.simulate(c.input)
+        try expectEqual(got, c.expected, "Failed on input '\(c.input)'")
+    }
+}
+
 suite.test("VietnameseSettingsStore persists settings and per-app map") {
     let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: tmpDir) }
