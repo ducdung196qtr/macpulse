@@ -11,16 +11,20 @@ DIST_DIR="$ROOT/dist"
 STAGING_DIR="$DIST_DIR/staging"
 
 echo "1) Ensuring release app is built..."
-if [ ! -d "/Applications/MacPulse.app" ]; then
-    ./scripts/build_app.sh
+APP_SRC="${APP_BUNDLE:-/Applications/MacPulse.app}"
+if [ ! -d "$APP_SRC" ]; then
+    APP_SRC="$ROOT/build/MacPulse.app"
+    if [ ! -d "$APP_SRC" ]; then
+        APP_BUNDLE="$APP_SRC" ./scripts/build_app.sh
+    fi
 fi
 
 echo "2) Preparing distribution directory..."
 rm -rf "$DIST_DIR"
 mkdir -p "$STAGING_DIR"
 
-echo "3) Copying MacPulse.app to staging..."
-cp -R "/Applications/MacPulse.app" "$STAGING_DIR/"
+echo "3) Copying $APP_SRC to staging..."
+cp -R "$APP_SRC" "$STAGING_DIR/MacPulse.app"
 ln -s /Applications "$STAGING_DIR/Applications"
 
 echo "4) Creating DMG..."

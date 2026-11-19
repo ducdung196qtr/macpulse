@@ -11,7 +11,7 @@ echo "2) Building release binary..."
 swift build -c release
 
 BIN_PATH="$(swift build -c release --show-bin-path)/MacPulse"
-APP_BUNDLE="/Applications/MacPulse.app"
+APP_BUNDLE="${APP_BUNDLE:-/Applications/MacPulse.app}"
 
 echo "3) Generating AppIcon.icns..."
 swift scripts/make_icon.swift
