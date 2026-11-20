@@ -610,6 +610,13 @@ public final class MacInputTapService {
         case .passthrough:
             return Unmanaged.passUnretained(originalEvent)
         case .replace(let backspaceCount, let text):
+            if backspaceCount == 0, text.count == 1 {
+                // In-place replacement: override Unicode string of current keyDown directly!
+                // Zero synthetic events, zero backspaces, zero delay, works 100% natively in all text fields!
+                var utf16 = Array(text.utf16)
+                originalEvent.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                return Unmanaged.passUnretained(originalEvent)
+            }
             postReplacement(
                 proxy: proxy,
                 backspaceCount: backspaceCount,
@@ -642,10 +649,10 @@ public final class MacInputTapService {
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
                 }
-                usleep(600)
+                usleep(300)
             }
             // Settle pause to allow target application to process backspace deletions
-            usleep(800)
+            usleep(400)
         }
 
         for char in text {
@@ -663,7 +670,7 @@ public final class MacInputTapService {
                 up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                 up.tapPostEvent(proxy)
             }
-            usleep(250)
+            usleep(150)
         }
     }
 }

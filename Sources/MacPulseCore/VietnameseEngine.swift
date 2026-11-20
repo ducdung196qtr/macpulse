@@ -75,7 +75,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         freeMark: Bool = true,
         spellCheckEnabled: Bool = true,
         restoreOnEscape: Bool = true,
-        standaloneWAsU: Bool = false,
+        standaloneWAsU: Bool = true,
         fixChromiumAutocomplete: Bool = true,
         smartSwitchPerApp: Bool = true,
         soundOnSwitch: Bool = true,
@@ -125,7 +125,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.freeMark = try container.decodeIfPresent(Bool.self, forKey: .freeMark) ?? true
         self.spellCheckEnabled = try container.decodeIfPresent(Bool.self, forKey: .spellCheckEnabled) ?? true
         self.restoreOnEscape = try container.decodeIfPresent(Bool.self, forKey: .restoreOnEscape) ?? true
-        self.standaloneWAsU = try container.decodeIfPresent(Bool.self, forKey: .standaloneWAsU) ?? false
+        self.standaloneWAsU = try container.decodeIfPresent(Bool.self, forKey: .standaloneWAsU) ?? true
         self.fixChromiumAutocomplete = try container.decodeIfPresent(Bool.self, forKey: .fixChromiumAutocomplete) ?? true
         self.smartSwitchPerApp = try container.decodeIfPresent(Bool.self, forKey: .smartSwitchPerApp) ?? true
         self.soundOnSwitch = try container.decodeIfPresent(Bool.self, forKey: .soundOnSwitch) ?? true
@@ -642,7 +642,7 @@ public final class VietnameseEngine {
             slots.append(CharSlot(base: "u", shape: .horn, isUpper: char.isUppercase, isStandaloneW: true))
             rawKeys.append(char)
             let nextRendered = render(slots: slots, tone: tone)
-            return diffAction(from: prevRendered, to: nextRendered)
+            return .replace(backspaceCount: prevRendered.count, text: nextRendered)
         }
 
         if !settings.freeMark {

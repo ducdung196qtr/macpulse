@@ -324,7 +324,7 @@ suite.test("IME 29: FreeMark disabled restricts tone placement until after vowel
 suite.test("IME 30: Disabled engine or spellCheckOff behaves predictably") {
     let engDisabled = VietnameseEngine(settings: VietnameseSettings(isEnabled: false))
     try expectEqual(engDisabled.simulate("Tieesng Vieejt "), "Tieesng Vieejt ")
-    let engNoSpell = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, spellCheckEnabled: false))
+    let engNoSpell = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, spellCheckEnabled: false, standaloneWAsU: false))
     try expectEqual(engNoSpell.simulate("worf "), "wò ")
 }
 
@@ -624,6 +624,29 @@ suite.test("CleanupExecutor.rescueAndCleanChrome removes broken SingletonLock & 
     try expect(report.removedLockFiles.contains("DevToolsActivePort"), "Should remove DevToolsActivePort")
     try expect(fm.fileExists(atPath: cookies.path), "Cookies MUST remain intact")
     try expect(fm.fileExists(atPath: bookmarks.path), "Bookmarks MUST remain intact")
+}
+
+suite.test("IME 35: ddwng -> đưng/đừng and standalone W as Ư default behavior") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    try expectEqual(eng.simulate("aw"), "ă", "aw should produce ă")
+    try expectEqual(eng.simulate("w"), "ư", "w standalone should produce ư by default")
+    try expectEqual(eng.simulate("a w"), "a ư", "a w should produce a ư")
+    try expectEqual(eng.simulate("ddw"), "đư", "ddw should produce đư")
+    try expectEqual(eng.simulate("ddwng"), "đưng", "ddwng should produce đưng")
+    try expectEqual(eng.simulate("ddwngf"), "đừng", "ddwngf should produce đừng")
+    try expectEqual(eng.simulate("dw"), "dư", "dw should produce dư")
+    try expectEqual(eng.simulate("tw"), "tư", "tw should produce tư")
+
+    // Verify onset + W sends at least 1 backspace to avoid dropping characters
+    let engAction = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    _ = engAction.processCharacter("d")
+    _ = engAction.processCharacter("d") // now "đ"
+    let wAction = engAction.processCharacter("w")
+    guard case .replace(let bs, let text) = wAction else {
+        throw TestFailure.failed("w after đ should produce replace action")
+    }
+    try expect(bs >= 1, "Backspace count must be >= 1 to wake the text field (was \(bs))")
+    try expectEqual(text, "đư", "Replacement text should be 'đư'")
 }
 
 suite.summaryAndExit()
