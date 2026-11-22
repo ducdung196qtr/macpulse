@@ -102,7 +102,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         macroEnabled: Bool = true,
         macroTable: [String: String] = VietnameseSettings.defaultMacroTable,
         useCapsLockToSwitch: Bool = false,
-        quickTelex: Bool = true,
+        quickTelex: Bool = false,
         smartEnglishRestore: Bool = true,
         autoCapitalize: Bool = false
     ) {
@@ -570,19 +570,6 @@ public final class VietnameseEngine {
         slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
 
         upgradeUOHornWithCodaIfNeeded()
-
-        if settings.spellCheckEnabled && !isSyllablePrefixValid(slots: slots, tone: tone) {
-            let raw = String(rawKeys)
-            let wasModified = (prevRendered + String(effectiveChar)) != raw
-            isRestoredToRaw = true
-            hasPendingUndoMismatch = false
-            tone = .none
-            slots = rawKeys.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
-            if wasModified {
-                return diffAction(from: prevRendered, to: raw)
-            }
-            return .passthrough
-        }
 
         let newRendered = render(slots: slots, tone: tone)
         if newRendered == prevRendered + String(char) {

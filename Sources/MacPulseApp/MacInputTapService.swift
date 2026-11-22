@@ -4,6 +4,7 @@ import Carbon
 import CoreGraphics
 import Foundation
 import MacPulseCore
+import os
 
 public struct ActiveInputConflict: Identifiable, Sendable, Equatable {
     public let id: String
@@ -68,14 +69,23 @@ public final class MacInputTapService {
         ("com.trankynam.GoTiengViet", "GoTiengViet")
     ]
 
-    private let stateLock = NSLock()
+    private var stateLock = os_unfair_lock()
     private let engine: VietnameseEngine
     private var settings: VietnameseSettings
     private var perAppEnabled: [String: Bool]
     private var currentBundleID: String
     private var currentAppName: String
 
+    // Fast-path cached copies for the tap thread (read lock-free or via unfair lock)
+    private var fastIsEnabled: Bool
+    private var fastHotkey: VietnameseHotkey
+    private var fastUseCapsLock: Bool
+    private var fastFixChrome: Bool
+
     private var eventSource: CGEventSource?
+    private var backspaceDownEvent: CGEvent?
+    private var backspaceUpEvent: CGEvent?
+
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
     private var eventTap: CFMachPort?
@@ -96,10 +106,27 @@ public final class MacInputTapService {
         self.settings = settings
         self.perAppEnabled = perAppEnabled
         self.engine = VietnameseEngine(settings: settings)
+        self.fastIsEnabled = settings.isEnabled
+        self.fastHotkey = settings.hotkey
+        self.fastUseCapsLock = settings.useCapsLockToSwitch
+        self.fastFixChrome = settings.fixChromiumAutocomplete
         let front = NSWorkspace.shared.frontmostApplication
         self.currentBundleID = front?.bundleIdentifier ?? ""
         self.currentAppName = front?.localizedName ?? ""
-        self.eventSource = CGEventSource(stateID: .hidSystemState)
+        // Use private state event source so synthetic events NEVER contaminate hardware HID device state
+        self.eventSource = CGEventSource(stateID: .privateState)
+
+        if let src = self.eventSource {
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true)
+            down?.flags = []
+            down?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            self.backspaceDownEvent = down
+
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false)
+            up?.flags = []
+            up?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            self.backspaceUpEvent = up
+        }
     }
 
     deinit {
@@ -107,6 +134,7 @@ public final class MacInputTapService {
     }
 
     public func start() {
+        Self.terminateConflictingApps()
         observeWorkspaceIfNeeded()
         updateTrustAndTapLifecycle(promptIfNeeded: false)
     }
@@ -122,10 +150,14 @@ public final class MacInputTapService {
     }
 
     public func updateSettings(_ newSettings: VietnameseSettings) {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         let prevEnabled = settings.isEnabled
         settings = newSettings
         engine.settings = newSettings
+        fastIsEnabled = newSettings.isEnabled
+        fastHotkey = newSettings.hotkey
+        fastUseCapsLock = newSettings.useCapsLockToSwitch
+        fastFixChrome = newSettings.fixChromiumAutocomplete
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
         if !newSettings.isEnabled {
             // When user explicitly disables IME, clear per-app state so no app silently re-enables it
@@ -134,25 +166,26 @@ public final class MacInputTapService {
             perAppEnabled[currentBundleID] = newSettings.isEnabled
         }
         engine.reset()
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
     }
 
     public func currentPerAppMap() -> [String: Bool] {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return perAppEnabled
+        os_unfair_lock_lock(&stateLock)
+        let map = perAppEnabled
+        os_unfair_lock_unlock(&stateLock)
+        return map
     }
 
     public func setPerAppEnabledMap(_ map: [String: Bool]) {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         perAppEnabled = map
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
     }
 
     public func resetWordBuffer() {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         engine.reset()
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
     }
 
     public static func isAccessibilityTrusted(prompt: Bool = false) -> Bool {
@@ -278,7 +311,7 @@ public final class MacInputTapService {
             let bid = app.bundleIdentifier ?? ""
             let name = app.localizedName ?? bid
 
-            self.stateLock.lock()
+            os_unfair_lock_lock(&self.stateLock)
             self.currentBundleID = bid
             self.currentAppName = name
             self.engine.reset()
@@ -289,10 +322,11 @@ public final class MacInputTapService {
                let saved = self.perAppEnabled[bid],
                saved != self.settings.isEnabled {
                 self.settings.isEnabled = saved
+                self.fastIsEnabled = saved
                 self.engine.settings = self.settings
                 switchedLanguage = saved
             }
-            self.stateLock.unlock()
+            os_unfair_lock_unlock(&self.stateLock)
 
             DispatchQueue.main.async {
                 self.onFrontmostAppChanged?(bid, name)
@@ -304,10 +338,10 @@ public final class MacInputTapService {
     }
 
     private func setTapState(_ newState: TapRuntimeState) {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         let changed = (tapState != newState)
         tapState = newState
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
         if changed {
             let trusted = Self.isAccessibilityTrusted(prompt: false)
             DispatchQueue.main.async { [weak self] in
@@ -317,23 +351,25 @@ public final class MacInputTapService {
     }
 
     private func launchTapThread() {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         if tapThread != nil {
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             return
         }
         let thread = Thread { [weak self] in
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
             self?.runTapLoop()
         }
         thread.name = "com.macpulse.inputtap"
         thread.qualityOfService = .userInteractive
+        thread.threadPriority = 1.0
         tapThread = thread
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
         thread.start()
     }
 
     private func teardownTapThread() {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         let rl = tapRunLoop
         let port = eventTap
         let src = tapRunLoopSource
@@ -341,7 +377,7 @@ public final class MacInputTapService {
         eventTap = nil
         tapRunLoopSource = nil
         tapThread = nil
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
 
         if let port {
             CGEvent.tapEnable(tap: port, enable: false)
@@ -375,9 +411,9 @@ public final class MacInputTapService {
             },
             userInfo: selfPtr
         ) else {
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             tapThread = nil
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             setTapState(.failedToCreateTap)
             return
         }
@@ -387,11 +423,11 @@ public final class MacInputTapService {
         CFRunLoopAddSource(currentRL, source, .commonModes)
         CGEvent.tapEnable(tap: port, enable: true)
 
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         self.eventTap = port
         self.tapRunLoopSource = source
         self.tapRunLoop = currentRL
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
 
         setTapState(.running)
         CFRunLoopRun()
@@ -399,10 +435,10 @@ public final class MacInputTapService {
 
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             let port = eventTap
             engine.reset()
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             if let port {
                 CGEvent.tapEnable(tap: port, enable: true)
             }
@@ -414,9 +450,11 @@ public final class MacInputTapService {
         }
 
         if type == .leftMouseDown || type == .rightMouseDown {
-            stateLock.lock()
-            engine.reset()
-            stateLock.unlock()
+            if fastIsEnabled {
+                os_unfair_lock_lock(&stateLock)
+                engine.reset()
+                os_unfair_lock_unlock(&stateLock)
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -434,12 +472,10 @@ public final class MacInputTapService {
     }
 
     private func handleFlagsChanged(_ event: CGEvent) {
-        stateLock.lock()
-        let hotkey = settings.hotkey
-        let useCaps = settings.useCapsLockToSwitch
-        stateLock.unlock()
-
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let hotkey = fastHotkey
+        let useCaps = fastUseCapsLock
+
         if (hotkey == .capsLock || useCaps) && keyCode == 0x39 {
             toggleLanguageFromHotkey()
             return
@@ -490,11 +526,8 @@ public final class MacInputTapService {
     private func handleKeyDown(proxy: CGEventTapProxy, event: CGEvent) -> Unmanaged<CGEvent>? {
         let flags = event.flags
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-
-        stateLock.lock()
-        let hotkey = settings.hotkey
-        let isEnabled = settings.isEnabled
-        stateLock.unlock()
+        let hotkey = fastHotkey
+        let isEnabled = fastIsEnabled
 
         if hotkey == .optionZ && keyCode == 0x06 && flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl) {
             toggleLanguageFromHotkey()
@@ -512,31 +545,31 @@ public final class MacInputTapService {
         }
 
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskSecondaryFn) {
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             engine.reset()
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             return Unmanaged.passUnretained(event)
         }
 
         switch keyCode {
         case 0x24, 0x4C, 0x30, 0x75, 0x7B, 0x7C, 0x7D, 0x7E, 0x73, 0x77, 0x74, 0x79:
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             engine.reset()
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             return Unmanaged.passUnretained(event)
         case 0x33:
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             let action = engine.processBackspace()
             let bundleID = currentBundleID
-            let fixChrome = settings.fixChromiumAutocomplete
-            stateLock.unlock()
+            let fixChrome = fastFixChrome
+            os_unfair_lock_unlock(&stateLock)
             return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
         case 0x35:
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             let action = engine.processEscape()
             let bundleID = currentBundleID
-            let fixChrome = settings.fixChromiumAutocomplete
-            stateLock.unlock()
+            let fixChrome = fastFixChrome
+            os_unfair_lock_unlock(&stateLock)
             if case .replace = action {
                 return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
             }
@@ -547,9 +580,9 @@ public final class MacInputTapService {
 
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         if isRepeat {
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             engine.reset()
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             return Unmanaged.passUnretained(event)
         }
 
@@ -557,33 +590,34 @@ public final class MacInputTapService {
         var uniChars = [UniChar](repeating: 0, count: 8)
         event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &actualLength, unicodeString: &uniChars)
         guard actualLength > 0 else {
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             engine.reset()
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             return Unmanaged.passUnretained(event)
         }
 
         let inputStr = String(utf16CodeUnits: Array(uniChars.prefix(actualLength)), count: actualLength)
         guard inputStr.count == 1, let ch = inputStr.first else {
-            stateLock.lock()
+            os_unfair_lock_lock(&stateLock)
             engine.reset()
-            stateLock.unlock()
+            os_unfair_lock_unlock(&stateLock)
             return Unmanaged.passUnretained(event)
         }
 
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         let action = engine.processCharacter(ch)
         let bundleID = currentBundleID
-        let fixChrome = settings.fixChromiumAutocomplete
-        stateLock.unlock()
+        let fixChrome = fastFixChrome
+        os_unfair_lock_unlock(&stateLock)
 
         return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
     }
 
     private func toggleLanguageFromHotkey() {
-        stateLock.lock()
+        os_unfair_lock_lock(&stateLock)
         let nextEnabled = !settings.isEnabled
         settings.isEnabled = nextEnabled
+        fastIsEnabled = nextEnabled
         engine.settings = settings
         engine.reset()
         let bid = currentBundleID
@@ -595,7 +629,7 @@ public final class MacInputTapService {
             perAppEnabled[bid] = nextEnabled
         }
         let playSound = settings.soundOnSwitch
-        stateLock.unlock()
+        os_unfair_lock_unlock(&stateLock)
 
         DispatchQueue.main.async { [weak self] in
             if playSound {
@@ -642,42 +676,43 @@ public final class MacInputTapService {
         bundleID: String,
         fixChrome: Bool
     ) {
-        // Direct event injection via the active tap proxy.
-        // Carries Unicode strings directly into the focused window's input context.
+        // Direct event injection via the active tap proxy with ZERO sleeps.
+        // Post pre-allocated backspaces immediately
         if backspaceCount > 0 {
             for _ in 0..<backspaceCount {
-                if let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x33, keyDown: true) {
-                    down.flags = []
-                    down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                if let down = backspaceDownEvent, let up = backspaceUpEvent {
                     down.tapPostEvent(proxy)
-                }
-                if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x33, keyDown: false) {
-                    up.flags = []
-                    up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
+                } else if let src = eventSource {
+                    if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) {
+                        down.flags = []
+                        down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                        down.tapPostEvent(proxy)
+                    }
+                    if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
+                        up.flags = []
+                        up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                        up.tapPostEvent(proxy)
+                    }
                 }
-                usleep(300)
             }
-            // Settle pause to allow target application to process backspace deletions
-            usleep(400)
         }
 
-        for char in text {
-            var utf16 = Array(String(char).utf16)
-            if let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: true) {
+        // Post replacement string at once in a single event pair (zero loop, zero sleep)
+        if !text.isEmpty, let src = eventSource {
+            var utf16 = Array(text.utf16)
+            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
                 down.flags = []
                 down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                 down.tapPostEvent(proxy)
             }
-            if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) {
+            if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
                 up.flags = []
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                // Attach unicode string to keyUp as well so Cocoa/WebKit text systems commit cleanly
                 up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                 up.tapPostEvent(proxy)
             }
-            usleep(150)
         }
     }
 }

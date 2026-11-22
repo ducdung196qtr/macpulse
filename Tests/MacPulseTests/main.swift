@@ -693,4 +693,15 @@ suite.test("IME 39: Expanded modern macros") {
     try expectEqual(eng.simulate("Cty Kh Sp "), "Công ty Khách hàng Sản phẩm ")
 }
 
+
+suite.test("IME 40: Stability of coongj -> cộng and quickTelex opt-in") {
+    let engDefault = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    try expectEqual(engDefault.simulate("coongj "), "cộng ")
+    try expectEqual(engDefault.simulate("ccoong "), "ccoong ", "Quick Telex must be off by default so cc does not become ch")
+
+    let engQuick = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, quickTelex: true))
+    try expectEqual(engQuick.simulate("ccoong "), "chông ")
+}
+
 suite.summaryAndExit()
+
