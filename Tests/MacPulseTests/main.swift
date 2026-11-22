@@ -712,6 +712,14 @@ suite.test("AITokenMonitor: detects local AI platforms and calculates token metr
     try expect(antigravity != nil, "Antigravity provider must be present")
     if let agy = antigravity, agy.isDetected {
         try expect(agy.totalTokensToday >= 0, "Total tokens must be non-negative")
+        try expect(agy.fiveHourQuota != nil, "Antigravity must have five-hour quota")
+        try expect(agy.weeklyQuota != nil, "Antigravity must have weekly quota")
+    }
+    let chatgpt = snap.providers.first { $0.providerType == .openaiCodex }
+    try expect(chatgpt != nil, "ChatGPT provider must be present")
+    if let gpt = chatgpt, gpt.isDetected {
+        try expect(gpt.fiveHourQuota != nil, "ChatGPT must have five-hour quota")
+        try expect(gpt.weeklyQuota != nil, "ChatGPT must have weekly quota")
     }
 }
 

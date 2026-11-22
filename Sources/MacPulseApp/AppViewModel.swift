@@ -7,7 +7,7 @@ import MacPulseCore
 public enum AppTab: String, CaseIterable, Identifiable {
     case overview = "Tổng quan"
     case vietnamese = "Bộ gõ"
-    case aiPulse = "AI Pulse"
+    case aiPulse = "AI Quota"
     case benchmark = "Đo tốc độ"
     case cleaner = "Dọn dẹp"
     public var id: String { rawValue }
