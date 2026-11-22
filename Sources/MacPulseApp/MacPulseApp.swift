@@ -85,6 +85,7 @@ private struct PopoverRootView: View {
                 switch vm.selectedTab {
                 case .overview: DashboardView(vm: vm)
                 case .vietnamese: VietnameseView(vm: vm)
+                case .aiPulse: AIPulseView(vm: vm)
                 case .benchmark: BenchmarkView(vm: vm)
                 case .cleaner: CleanerView(vm: vm)
                 }
@@ -160,6 +161,7 @@ private struct PopoverRootView: View {
         switch tab {
         case .overview: return "gauge.with.dots.needle.33percent"
         case .vietnamese: return "keyboard"
+        case .aiPulse: return "brain.head.profile"
         case .benchmark: return "speedometer"
         case .cleaner: return "sparkles"
         }

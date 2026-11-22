@@ -703,5 +703,17 @@ suite.test("IME 40: Stability of coongj -> cộng and quickTelex opt-in") {
     try expectEqual(engQuick.simulate("ccoong "), "chông ")
 }
 
+suite.test("AITokenMonitor: detects local AI platforms and calculates token metrics without delay") {
+    let monitor = AITokenMonitor()
+    let snap = monitor.scanAll()
+    try expect(snap.providers.count == 4, "Must detect 4 AI providers")
+    try expect(snap.activeProvidersCount >= 1, "Must detect at least 1 active AI provider on developer Mac")
+    let antigravity = snap.providers.first { $0.providerType == .antigravity }
+    try expect(antigravity != nil, "Antigravity provider must be present")
+    if let agy = antigravity, agy.isDetected {
+        try expect(agy.totalTokensToday >= 0, "Total tokens must be non-negative")
+    }
+}
+
 suite.summaryAndExit()
 

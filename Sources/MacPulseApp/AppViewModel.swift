@@ -7,6 +7,7 @@ import MacPulseCore
 public enum AppTab: String, CaseIterable, Identifiable {
     case overview = "Tổng quan"
     case vietnamese = "Bộ gõ"
+    case aiPulse = "AI Pulse"
     case benchmark = "Đo tốc độ"
     case cleaner = "Dọn dẹp"
     public var id: String { rawValue }
@@ -50,12 +51,19 @@ public final class AppViewModel: ObservableObject {
         didSet {
             if selectedTab == .cleaner && Date().timeIntervalSince(lastCleanupScanAt) > 60 {
                 scanCleanup()
+            } else if selectedTab == .aiPulse {
+                refreshAIQuota()
             }
         }
     }
     private var lastCleanupScanAt: Date = .distantPast
     @Published public var isPopoverVisible: Bool = false
     @Published public var cleanerFocus: CleanerFocusSection = .all
+
+    // MARK: - AI Pulse Token Monitor State
+    @Published public var aiSnapshot: AITokenSnapshot?
+    @Published public var isScanningAI: Bool = false
+    private let aiTokenMonitor = AITokenMonitor()
 
     @Published public var snapshot: SystemSnapshot?
     @Published public var processGroups: [ProcessGroupSummary] = []
@@ -160,6 +168,9 @@ public final class AppViewModel: ObservableObject {
             inputTapService.checkAccessibilityStatusNow()
             refreshIMEEnvironment()
             refreshNow(includeProcesses: true)
+            if selectedTab == .aiPulse || aiSnapshot == nil {
+                refreshAIQuota()
+            }
         } else {
             pendingTerminationGroup = nil
             inspectedGuidanceGroup = nil
@@ -265,6 +276,18 @@ public final class AppViewModel: ObservableObject {
         systemInputSourceID = MacInputTapService.activeSystemInputSourceID()
         isSystemVietnameseInputSourceActive = MacInputTapService.isSystemVietnameseInputSourceActive()
         perAppCount = inputTapService.currentPerAppMap().count
+    }
+
+    public func refreshAIQuota() {
+        guard !isScanningAI else { return }
+        isScanningAI = true
+        Task.detached(priority: .utility) { [aiTokenMonitor] in
+            let snap = aiTokenMonitor.scanAll()
+            await MainActor.run {
+                self.aiSnapshot = snap
+                self.isScanningAI = false
+            }
+        }
     }
 
     public var menuBarCompactLabel: String {
