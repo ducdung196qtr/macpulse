@@ -436,7 +436,14 @@ public final class MacInputTapService {
     private func handleFlagsChanged(_ event: CGEvent) {
         stateLock.lock()
         let hotkey = settings.hotkey
+        let useCaps = settings.useCapsLockToSwitch
         stateLock.unlock()
+
+        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        if (hotkey == .capsLock || useCaps) && keyCode == 0x39 {
+            toggleLanguageFromHotkey()
+            return
+        }
 
         let flags = event.flags
         let hasCmd = flags.contains(.maskCommand)
@@ -475,7 +482,7 @@ public final class MacInputTapService {
                     toggleLanguageFromHotkey()
                 }
             }
-        case .optionZ, .ctrlSpace:
+        case .optionZ, .ctrlSpace, .capsLock:
             comboActive = false
         }
     }

@@ -21,6 +21,7 @@ public enum VietnameseHotkey: String, Codable, Sendable, CaseIterable, Identifia
     case cmdShift
     case optionZ
     case ctrlSpace
+    case capsLock
 
     public var id: String { rawValue }
 
@@ -30,6 +31,7 @@ public enum VietnameseHotkey: String, Codable, Sendable, CaseIterable, Identifia
         case .cmdShift: return "Cmd + Shift"
         case .optionZ: return "Option + Z"
         case .ctrlSpace: return "Ctrl + Space"
+        case .capsLock: return "Caps Lock"
         }
     }
 }
@@ -49,6 +51,10 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
     public var bracketShortcuts: Bool
     public var macroEnabled: Bool
     public var macroTable: [String: String]
+    public var useCapsLockToSwitch: Bool
+    public var quickTelex: Bool
+    public var smartEnglishRestore: Bool
+    public var autoCapitalize: Bool
 
     public static let defaultMacroTable: [String: String] = [
         "vn": "Việt Nam",
@@ -64,7 +70,20 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         "mk": "mật khẩu",
         "sdt": "số điện thoại",
         "sđt": "số điện thoại",
-        "mail": "email"
+        "mail": "email",
+        "ms": "mình",
+        "mik": "mình",
+        "cx": "cũng",
+        "j": "gì",
+        "r": "rồi",
+        "nt": "nhắn tin",
+        "tl": "trả lời",
+        "ok": "OK",
+        "ad": "admin",
+        "sp": "sản phẩm",
+        "nv": "nhân viên",
+        "kh": "khách hàng",
+        "cty": "công ty"
     ]
 
     public init(
@@ -81,7 +100,11 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         soundOnSwitch: Bool = true,
         bracketShortcuts: Bool = true,
         macroEnabled: Bool = true,
-        macroTable: [String: String] = VietnameseSettings.defaultMacroTable
+        macroTable: [String: String] = VietnameseSettings.defaultMacroTable,
+        useCapsLockToSwitch: Bool = false,
+        quickTelex: Bool = true,
+        smartEnglishRestore: Bool = true,
+        autoCapitalize: Bool = false
     ) {
         self.isEnabled = isEnabled
         self.inputMethod = inputMethod
@@ -97,6 +120,10 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.bracketShortcuts = bracketShortcuts
         self.macroEnabled = macroEnabled
         self.macroTable = macroTable
+        self.useCapsLockToSwitch = useCapsLockToSwitch
+        self.quickTelex = quickTelex
+        self.smartEnglishRestore = smartEnglishRestore
+        self.autoCapitalize = autoCapitalize
     }
 
     enum CodingKeys: String, CodingKey {
@@ -114,6 +141,10 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         case bracketShortcuts
         case macroEnabled
         case macroTable
+        case useCapsLockToSwitch
+        case quickTelex
+        case smartEnglishRestore
+        case autoCapitalize
     }
 
     public init(from decoder: Decoder) throws {
@@ -132,6 +163,10 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.bracketShortcuts = try container.decodeIfPresent(Bool.self, forKey: .bracketShortcuts) ?? true
         self.macroEnabled = try container.decodeIfPresent(Bool.self, forKey: .macroEnabled) ?? true
         self.macroTable = try container.decodeIfPresent([String: String].self, forKey: .macroTable) ?? Self.defaultMacroTable
+        self.useCapsLockToSwitch = try container.decodeIfPresent(Bool.self, forKey: .useCapsLockToSwitch) ?? false
+        self.quickTelex = try container.decodeIfPresent(Bool.self, forKey: .quickTelex) ?? true
+        self.smartEnglishRestore = try container.decodeIfPresent(Bool.self, forKey: .smartEnglishRestore) ?? true
+        self.autoCapitalize = try container.decodeIfPresent(Bool.self, forKey: .autoCapitalize) ?? false
     }
 }
 
@@ -166,6 +201,8 @@ public final class VietnameseEngine {
         var isStandaloneW: Bool = false
         var isBracketTransform: Bool = false
         var bracketKey: Character? = nil
+        var isQuickTelex: Bool = false
+        var quickTelexKey: Character? = nil
     }
 
     private enum ToneAction: Equatable {
@@ -186,6 +223,7 @@ public final class VietnameseEngine {
     private var hornUndone: Bool = false
     private var undoneTone: ToneMark? = nil
     private var bracketUndone: Bool = false
+    private var shouldAutoCapitalize: Bool = false
 
     public init(settings: VietnameseSettings = VietnameseSettings()) {
         self.settings = settings
@@ -288,6 +326,24 @@ public final class VietnameseEngine {
         let prevRendered = render(slots: slots, tone: tone)
         let raw = String(rawKeys)
 
+        // Update smart auto capitalization state
+        if char == "." || char == "!" || char == "?" || char == "\n" {
+            shouldAutoCapitalize = true
+        } else if char != " " && char != "\t" {
+            shouldAutoCapitalize = false
+        }
+
+        // Smart English Words Auto-Restore
+        if settings.smartEnglishRestore && !slots.isEmpty && !raw.isEmpty && prevRendered != raw {
+            let lowerRaw = raw.lowercased()
+            let endsInToneOrHorn = lowerRaw.hasSuffix("s") || lowerRaw.hasSuffix("f") || lowerRaw.hasSuffix("r") || lowerRaw.hasSuffix("x") || lowerRaw.hasSuffix("j") || lowerRaw.hasSuffix("w")
+            if !(lowerRaw.count <= 3 && endsInToneOrHorn) {
+                if Self.commonEnglishWords.contains(lowerRaw) {
+                    return .replace(backspaceCount: prevRendered.count, text: raw + String(char))
+                }
+            }
+        }
+
         // Macros only trigger on whitespace delimiters (Space, Tab, Enter) to avoid corrupting URLs, domains (.vn) and code
         if settings.macroEnabled && (char == " " || char == "\t" || char == "\n") && !slots.isEmpty && !raw.isEmpty {
             let lowerRaw = raw.lowercased()
@@ -322,12 +378,18 @@ public final class VietnameseEngine {
             return .passthrough
         }
 
-        let isBracketChar = (char == "[" || char == "]" || char == "{" || char == "}")
+        var effectiveChar = char
+        if settings.autoCapitalize && shouldAutoCapitalize && slots.isEmpty && char.isLetter && char.isLowercase {
+            effectiveChar = Character(char.uppercased())
+            shouldAutoCapitalize = false
+        }
+
+        let isBracketChar = (effectiveChar == "[" || effectiveChar == "]" || effectiveChar == "{" || effectiveChar == "}")
         let telexEnabled = settings.inputMethod == .telex || settings.inputMethod == .telexAndVni
 
         if isBracketChar && settings.bracketShortcuts && telexEnabled && !isRestoredToRaw {
-            let isClosing = (char == "]" || char == "}")
-            let isUpper = (char == "{" || char == "}")
+            let isClosing = (effectiveChar == "]" || effectiveChar == "}")
+            let isUpper = (effectiveChar == "{" || effectiveChar == "}")
             let prevRendered = render(slots: slots, tone: tone)
 
             if isClosing {
@@ -336,7 +398,7 @@ public final class VietnameseEngine {
                 if !slots.isEmpty && slots.last?.bracketKey == "]" {
                     slots.removeLast()
                     slots.append(CharSlot(base: "]", shape: .plain, isUpper: isUpper))
-                    rawKeys.append(char)
+                    rawKeys.append(effectiveChar)
                     isRestoredToRaw = true
                     bracketUndone = true
                     let nextRendered = render(slots: slots, tone: tone)
@@ -344,7 +406,7 @@ public final class VietnameseEngine {
                 }
 
                 slots.append(CharSlot(base: "u", shape: .horn, isUpper: isUpper, isBracketTransform: true, bracketKey: "]"))
-                rawKeys.append(char)
+                rawKeys.append(effectiveChar)
                 let nextRendered = render(slots: slots, tone: tone)
                 return diffAction(from: prevRendered, to: nextRendered)
             } else {
@@ -353,7 +415,7 @@ public final class VietnameseEngine {
                 if !slots.isEmpty && slots.last?.bracketKey == "[" {
                     slots.removeLast()
                     slots.append(CharSlot(base: "[", shape: .plain, isUpper: isUpper))
-                    rawKeys.append(char)
+                    rawKeys.append(effectiveChar)
                     isRestoredToRaw = true
                     bracketUndone = true
                     let nextRendered = render(slots: slots, tone: tone)
@@ -364,28 +426,28 @@ public final class VietnameseEngine {
                 if !slots.isEmpty && slots.last?.base == "u" && slots.last?.shape == .plain {
                     slots[slots.count - 1].shape = .horn
                     slots.append(CharSlot(base: "o", shape: .horn, isUpper: isUpper, isBracketTransform: true, bracketKey: "["))
-                    rawKeys.append(char)
+                    rawKeys.append(effectiveChar)
                     let nextRendered = render(slots: slots, tone: tone)
                     return diffAction(from: prevRendered, to: nextRendered)
                 }
 
                 slots.append(CharSlot(base: "o", shape: .horn, isUpper: isUpper, isBracketTransform: true, bracketKey: "["))
-                rawKeys.append(char)
+                rawKeys.append(effectiveChar)
                 let nextRendered = render(slots: slots, tone: tone)
                 return diffAction(from: prevRendered, to: nextRendered)
             }
         }
 
-        let lowerStr = char.lowercased()
+        let lowerStr = effectiveChar.lowercased()
         guard lowerStr.count == 1, let lower = lowerStr.first else {
-            return processDelimiter(char, allowAutoRestore: false)
+            return processDelimiter(effectiveChar, allowAutoRestore: false)
         }
 
         let isAsciiLetter = lower >= "a" && lower <= "z"
         let isDigit = lower >= "0" && lower <= "9"
 
         if !isAsciiLetter && !isDigit {
-            return processDelimiter(char, allowAutoRestore: isPrintableWordDelimiter(char))
+            return processDelimiter(effectiveChar, allowAutoRestore: isPrintableWordDelimiter(effectiveChar))
         }
 
         if isDigit {
@@ -399,15 +461,15 @@ public final class VietnameseEngine {
                     reset()
                     return .passthrough
                 }
-                rawKeys.append(char)
+                rawKeys.append(effectiveChar)
                 return .passthrough
             }
         }
 
         if isRestoredToRaw {
             let prevDisplayed = render(slots: slots, tone: tone)
-            rawKeys.append(char)
-            slots.append(CharSlot(base: lower, shape: .plain, isUpper: char.isUppercase))
+            rawKeys.append(effectiveChar)
+            slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
             if hasPendingUndoMismatch {
                 hasPendingUndoMismatch = false
                 slots = rawKeys.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
@@ -420,8 +482,8 @@ public final class VietnameseEngine {
         let prevRendered = render(slots: slots, tone: tone)
 
         if slots.isEmpty && lower == "w" && settings.standaloneWAsU && (settings.inputMethod == .telex || settings.inputMethod == .telexAndVni) {
-            rawKeys.append(char)
-            slots.append(CharSlot(base: "u", shape: .horn, isUpper: char.isUppercase, isStandaloneW: true))
+            rawKeys.append(effectiveChar)
+            slots.append(CharSlot(base: "u", shape: .horn, isUpper: effectiveChar.isUppercase, isStandaloneW: true))
             let nextRendered = render(slots: slots, tone: tone)
             return .replace(backspaceCount: 0, text: nextRendered)
         }
@@ -435,29 +497,59 @@ public final class VietnameseEngine {
             let telexEnabled = settings.inputMethod == .telex || settings.inputMethod == .telexAndVni
             let vniEnabled = settings.inputMethod == .vni || settings.inputMethod == .telexAndVni
 
+            // Quick Telex onset expansion: cc->ch, kk->kh, gg->gi, nn->ng, qq->qu, pp->ph, tt->th
+            if settings.quickTelex && telexEnabled && tone == .none {
+                if slots.count == 1 && slots[0].shape == .plain {
+                    let first = slots[0].base
+                    let quickMap: [Character: Character] = [
+                        "c": "h", "k": "h", "g": "i", "n": "g", "q": "u", "p": "h", "t": "h"
+                    ]
+                    if let second = quickMap[first], lower == first {
+                        slots = [
+                            CharSlot(base: first, shape: .plain, isUpper: slots[0].isUpper),
+                            CharSlot(base: second, shape: .plain, isUpper: effectiveChar.isUppercase, isQuickTelex: true, quickTelexKey: first)
+                        ]
+                        rawKeys.append(effectiveChar)
+                        let nextRendered = render(slots: slots, tone: tone)
+                        return diffAction(from: prevRendered, to: nextRendered)
+                    }
+                } else if slots.count == 2 && slots[1].isQuickTelex && slots[1].quickTelexKey == lower {
+                    // Undo quick telex on 3rd identical tap (e.g. ccc -> cc, kkk -> kk)
+                    let origBase = slots[0].base
+                    slots = [
+                        CharSlot(base: origBase, shape: .plain, isUpper: slots[0].isUpper),
+                        CharSlot(base: origBase, shape: .plain, isUpper: slots[1].isUpper),
+                        CharSlot(base: origBase, shape: .plain, isUpper: effectiveChar.isUppercase)
+                    ]
+                    rawKeys.append(effectiveChar)
+                    let nextRendered = render(slots: slots, tone: tone)
+                    return diffAction(from: prevRendered, to: nextRendered)
+                }
+            }
+
             let prefixCanTransform = !settings.spellCheckEnabled || canAcceptVietnameseTransforms(slots: slots)
 
             if prefixCanTransform {
                 if (telexEnabled && lower == "d") || (vniEnabled && lower == "9") {
-                    if let action = tryApplyStroke(char: char, prevRendered: prevRendered, isVNI: lower == "9") {
+                    if let action = tryApplyStroke(char: effectiveChar, prevRendered: prevRendered, isVNI: lower == "9") {
                         return action
                     }
                 }
 
                 if (telexEnabled && (lower == "a" || lower == "e" || lower == "o")) || (vniEnabled && lower == "6") {
-                    if let action = tryApplyCircumflex(char: char, lower: lower, prevRendered: prevRendered, isVNI: lower == "6") {
+                    if let action = tryApplyCircumflex(char: effectiveChar, lower: lower, prevRendered: prevRendered, isVNI: lower == "6") {
                         return action
                     }
                 }
 
                 if (telexEnabled && lower == "w") || (vniEnabled && (lower == "7" || lower == "8")) {
-                    if let action = tryApplyHornOrBreve(char: char, lower: lower, prevRendered: prevRendered) {
+                    if let action = tryApplyHornOrBreve(char: effectiveChar, lower: lower, prevRendered: prevRendered) {
                         return action
                     }
                 }
 
                 if let toneCmd = parseToneAction(lower: lower, telexEnabled: telexEnabled, vniEnabled: vniEnabled) {
-                    if let action = tryApplyTone(toneCmd, char: char, prevRendered: prevRendered) {
+                    if let action = tryApplyTone(toneCmd, char: effectiveChar, prevRendered: prevRendered) {
                         return action
                     }
                 }
@@ -465,7 +557,7 @@ public final class VietnameseEngine {
         }
 
         if isDigit {
-            rawKeys.append(char)
+            rawKeys.append(effectiveChar)
             isRestoredToRaw = true
             let raw = String(rawKeys)
             if prevRendered != String(rawKeys.dropLast()) {
@@ -474,14 +566,14 @@ public final class VietnameseEngine {
             return .passthrough
         }
 
-        rawKeys.append(char)
-        slots.append(CharSlot(base: lower, shape: .plain, isUpper: char.isUppercase))
+        rawKeys.append(effectiveChar)
+        slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
 
         upgradeUOHornWithCodaIfNeeded()
 
         if settings.spellCheckEnabled && !isSyllablePrefixValid(slots: slots, tone: tone) {
             let raw = String(rawKeys)
-            let wasModified = (prevRendered + String(char)) != raw
+            let wasModified = (prevRendered + String(effectiveChar)) != raw
             isRestoredToRaw = true
             hasPendingUndoMismatch = false
             tone = .none
@@ -990,6 +1082,56 @@ public final class VietnameseEngine {
         "ư", "ưa", "ưc", "ưi", "ưm", "ưn", "ưng", "ưo", "ưt", "ưu",
         "ươ", "ươc", "ươi", "ươm", "ươn", "ương", "ươp", "ươt", "ươu",
         "y", "ych", "yê", "yêm", "yên", "yêng", "yêt", "yêu", "ym", "yn", "ynh", "yt"
+    ]
+
+    public static let commonEnglishWords: Set<String> = [
+        // Tech, programming & developer terms
+        "post", "get", "set", "test", "user", "admin", "login", "reset", "format",
+        "password", "email", "server", "client", "docker", "react", "swift", "git",
+        "status", "commit", "push", "pull", "branch", "merge", "checkout", "true",
+        "false", "null", "class", "import", "export", "function", "return", "const",
+        "table", "column", "row", "view", "page", "site", "chat", "link", "text",
+        "type", "date", "time", "file", "path", "home", "app", "help", "info",
+        "case", "break", "switch", "while", "loop", "error", "warn", "debug",
+        "trace", "log", "start", "stop", "next", "prev", "index", "count", "size",
+        "data", "base", "token", "auth", "host", "port", "root", "main", "node",
+        "item", "list", "form", "input", "output", "query", "state", "props",
+        "hook", "card", "icon", "modal", "title", "body", "head", "footer", "meta",
+        "style", "font", "color", "image", "media", "audio", "video", "event",
+        "click", "drag", "drop", "press", "touch", "scroll", "load", "save",
+        "open", "close", "read", "write", "send", "call", "wait", "done", "fail",
+        "pass", "badge", "label", "button", "menu", "tab", "alert", "toast",
+        "group", "stack", "grid", "box", "flex", "wrap", "auto", "fixed",
+        "span", "code", "block", "inline", "chart", "graph", "metric", "stat",
+        "report", "track", "filter", "sort", "search", "find", "match", "replace",
+        "regex", "string", "number", "boolean", "array", "object", "map",
+        "hash", "cache", "store", "memory", "cpu", "disk", "ram", "task", "job",
+        "worker", "queue", "pipe", "stream", "socket", "http", "https", "url",
+        "uri", "api", "rest", "json", "xml", "yaml", "html", "css", "sql",
+        "key", "value", "field", "record", "entry", "schema", "model",
+        "mock", "stub", "patch", "diff", "tag", "release", "build", "deploy",
+        "ci", "cd", "spec", "suite", "runner", "lint",
+
+        // Common conversational & internet English words
+        "the", "and", "for", "with", "from", "have", "this", "that", "your",
+        "more", "make", "like", "just", "know", "take", "people", "into",
+        "year", "good", "some", "could", "them", "other", "than", "then",
+        "now", "look", "only", "come", "its", "over", "think", "also",
+        "back", "after", "use", "two", "how", "our", "work", "first",
+        "well", "way", "even", "new", "want", "because", "any", "these",
+        "give", "day", "most", "us", "facebook", "google", "apple", "microsoft",
+        "youtube", "tiktok", "zalo", "telegram", "slack", "discord", "zoom",
+        "chrome", "safari", "iphone", "ipad", "macbook", "laptop", "online",
+        "offline", "game", "shop", "sale", "order", "ship", "bill", "bank",
+        "check", "deal", "super", "smart", "pro", "mini", "plus",
+        "cool", "nice", "fast", "slow", "easy", "hard", "high", "low",
+        "free", "vip", "hot", "top", "best", "fan", "club", "team",
+        "room", "house", "car", "bus", "bike", "play", "music",
+        "song", "film", "movie", "star", "show", "live", "feed",
+        "share", "follow", "story", "reel", "note", "poll", "vote",
+        "quiz", "meme", "trend", "viral", "blog", "vlog", "podcast", "cast",
+        "broadcast", "channel", "sub", "hit", "rule", "safe", "name", "zone",
+        "rate", "gate", "tree", "blue", "mode", "role"
     ]
 
     private func canAcceptVietnameseTransforms(slots: [CharSlot]) -> Bool {

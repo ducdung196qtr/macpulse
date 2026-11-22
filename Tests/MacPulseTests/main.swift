@@ -649,4 +649,48 @@ suite.test("IME 35: ddwng -> đưng/đừng and standalone W as Ư default behav
     try expectEqual(text, "đư", "Replacement text should be 'đư'")
 }
 
+suite.test("IME 36: Smart English words auto-restore on delimiter") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, smartEnglishRestore: true))
+    try expectEqual(eng.simulate("post "), "post ", "post should auto-restore")
+    try expectEqual(eng.simulate("user "), "user ", "user should auto-restore")
+    try expectEqual(eng.simulate("reset "), "reset ", "reset should auto-restore")
+    try expectEqual(eng.simulate("status "), "status ", "status should auto-restore")
+    try expectEqual(eng.simulate("admin "), "admin ", "admin should auto-restore")
+    try expectEqual(eng.simulate("format "), "format ", "format should auto-restore")
+    try expectEqual(eng.simulate("docker "), "docker ", "docker should auto-restore")
+    try expectEqual(eng.simulate("react "), "react ", "react should auto-restore")
+    try expectEqual(eng.simulate("true "), "true ", "true should auto-restore")
+    try expectEqual(eng.simulate("class "), "class ", "class should auto-restore")
+    try expectEqual(eng.simulate("google "), "google ", "google should auto-restore")
+    // Real Vietnamese words must NOT be restored:
+    try expectEqual(eng.simulate("toans "), "toán ", "toán must remain accented")
+    try expectEqual(eng.simulate("nguoiwf "), "người ", "người must remain accented")
+    try expectEqual(eng.simulate("dduocwj "), "được ", "được must remain accented")
+}
+
+suite.test("IME 37: Quick Telex onset expansion and 3-tap undo") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, quickTelex: true))
+    try expectEqual(eng.simulate("ccaos "), "cháo ", "cc should expand to ch")
+    try expectEqual(eng.simulate("kkoong "), "không ", "kk should expand to kh")
+    try expectEqual(eng.simulate("nnuoiwf "), "người ", "nn should expand to ng")
+    try expectEqual(eng.simulate("tteef "), "thề ", "tt should expand to th")
+    try expectEqual(eng.simulate("ggas "), "giá ", "gg should expand to gi")
+    try expectEqual(eng.simulate("ppair "), "phải ", "pp should expand to ph")
+    try expectEqual(eng.simulate("qqas "), "quá ", "qq should expand to qu")
+    // 3-tap undo
+    try expectEqual(eng.simulate("ccc "), "ccc ", "ccc should undo to ccc")
+    try expectEqual(eng.simulate("kkk "), "kkk ", "kkk should undo to kkk")
+}
+
+suite.test("IME 38: Smart Auto-Capitalization after sentence delimiters") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, autoCapitalize: true))
+    try expectEqual(eng.simulate("chaof banj. hoom nay ddepj trowif! chungs ta ddi? ok. "), "chào bạn. Hôm nay đẹp trời! Chúng ta đi? Ok. ")
+}
+
+suite.test("IME 39: Expanded modern macros") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, macroEnabled: true))
+    try expectEqual(eng.simulate("ad sp nv kh cty r nt tl "), "admin sản phẩm nhân viên khách hàng công ty rồi nhắn tin trả lời ")
+    try expectEqual(eng.simulate("Cty Kh Sp "), "Công ty Khách hàng Sản phẩm ")
+}
+
 suite.summaryAndExit()

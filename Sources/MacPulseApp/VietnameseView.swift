@@ -209,6 +209,7 @@ struct VietnameseView: View {
         case .cmdShift: return "⌘ ⇧"
         case .optionZ: return "⌥ Z"
         case .ctrlSpace: return "⌃ ␣"
+        case .capsLock: return "⇪ Caps"
         }
     }
 
@@ -217,6 +218,14 @@ struct VietnameseView: View {
             Text("Tuỳ chọn nâng cao kiểu EVKey")
                 .font(.headline)
 
+            Toggle("Tự động khôi phục từ tiếng Anh (post, get, user, login, code...)", isOn: $vm.imeSettings.smartEnglishRestore)
+                .font(.subheadline)
+            Toggle("Gõ nhanh phụ âm đầu (Quick Telex: cc=ch, kk=kh, nn=ng, tt=th...)", isOn: $vm.imeSettings.quickTelex)
+                .font(.subheadline)
+            Toggle("Dùng phím Caps Lock để chuyển Việt / Anh", isOn: $vm.imeSettings.useCapsLockToSwitch)
+                .font(.subheadline)
+            Toggle("Tự động viết hoa đầu câu (sau dấu chấm, hỏi, than)", isOn: $vm.imeSettings.autoCapitalize)
+                .font(.subheadline)
             Toggle("Đặt dấu kiểu mới (hoà, thuý, uỷ)", isOn: $vm.imeSettings.modernOrthography)
                 .font(.subheadline)
             Toggle("Đặt dấu tự do (gõ dấu sau phụ âm cuối: toans -> toán)", isOn: $vm.imeSettings.freeMark)
