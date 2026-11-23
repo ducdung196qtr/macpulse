@@ -744,6 +744,9 @@ suite.test("AITokenMonitor: detects local AI platforms and calculates token metr
 suite.test("VietnameseAppDetector recognizes VPS, Remote Desktop and Terminal apps") {
     // VPS & Remote Desktop
     try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.rdc.macos"), "Microsoft Remote Desktop should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.rdc.macos", appName: "Windows App"), "Windows App with com.microsoft.rdc.macos should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.WindowsApp", appName: "Windows App"), "Windows App with com.microsoft.WindowsApp should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "unknown.bundle", appName: "Windows App"), "Windows App by name should be detected as VPS")
     try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.rdc.mac"), "Windows App should be detected as VPS")
     try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.philandro.anydesk"), "AnyDesk should be detected as VPS")
     try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.carriez.rustdesk"), "RustDesk should be detected as VPS")

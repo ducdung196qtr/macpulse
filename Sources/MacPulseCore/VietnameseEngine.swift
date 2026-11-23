@@ -192,6 +192,7 @@ public enum VietnameseAppDetector {
         "com.microsoft.rdc.osx",
         "com.microsoft.rdc.mac",
         "com.microsoft.rdc.osx.beta",
+        "com.microsoft.WindowsApp",
         // AnyDesk, RustDesk, TeamViewer
         "com.philandro.anydesk",
         "com.carriez.rustdesk",
@@ -240,11 +241,13 @@ public enum VietnameseAppDetector {
         let nLower = appName.lowercased()
         if bLower.contains("remotedesktop") || bLower.contains("rdc") || bLower.contains("anydesk")
             || bLower.contains("rustdesk") || bLower.contains("teamviewer") || bLower.contains("vnc")
-            || bLower.contains("termius") || bLower.contains("putty") || bLower.contains("royaltsx") {
+            || bLower.contains("termius") || bLower.contains("putty") || bLower.contains("royaltsx")
+            || bLower.contains("windowsapp") {
             return true
         }
-        if nLower.contains("remote desktop") || nLower.contains("anydesk") || nLower.contains("rustdesk")
-            || nLower.contains("teamviewer") || nLower.contains("vnc viewer") || nLower.contains("termius") {
+        if nLower.contains("windows app") || nLower.contains("remote desktop") || nLower.contains("anydesk")
+            || nLower.contains("rustdesk") || nLower.contains("teamviewer") || nLower.contains("vnc viewer")
+            || nLower.contains("termius") || nLower.contains("windows") {
             return true
         }
         return false
@@ -263,8 +266,16 @@ public enum VietnameseAppDetector {
         return false
     }
 
-    public static func computeIsAppExcluded(bundleID: String, appName: String, settings: VietnameseSettings) -> Bool {
+    public static func computeIsAppExcluded(
+        bundleID: String,
+        appName: String,
+        settings: VietnameseSettings,
+        perAppEnabled: [String: Bool] = [:]
+    ) -> Bool {
         guard !bundleID.isEmpty else { return false }
+        if let saved = perAppEnabled[bundleID] {
+            return !saved
+        }
         if settings.autoBypassVPSAndRemote && isVPSOrRemoteApp(bundleID: bundleID, appName: appName) {
             return true
         }

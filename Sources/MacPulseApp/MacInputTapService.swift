@@ -63,8 +63,8 @@ public final class MacInputTapService {
         VietnameseAppDetector.isTerminalApp(bundleID: bundleID, appName: appName)
     }
 
-    public static func computeIsAppExcluded(bundleID: String, appName: String, settings: VietnameseSettings) -> Bool {
-        VietnameseAppDetector.computeIsAppExcluded(bundleID: bundleID, appName: appName, settings: settings)
+    public static func computeIsAppExcluded(bundleID: String, appName: String, settings: VietnameseSettings, perAppEnabled: [String: Bool] = [:]) -> Bool {
+        VietnameseAppDetector.computeIsAppExcluded(bundleID: bundleID, appName: appName, settings: settings, perAppEnabled: perAppEnabled)
     }
 
     private static let conflictBundleMap: [(bundleID: String, label: String)] = [
@@ -121,7 +121,7 @@ public final class MacInputTapService {
         let frontName = front?.localizedName ?? frontBid
         self.currentBundleID = frontBid
         self.currentAppName = frontName
-        let isExcluded = Self.computeIsAppExcluded(bundleID: frontBid, appName: frontName, settings: settings)
+        let isExcluded = Self.computeIsAppExcluded(bundleID: frontBid, appName: frontName, settings: settings, perAppEnabled: perAppEnabled)
         self.fastIsExcludedApp = isExcluded
         if settings.smartSwitchPerApp && !frontBid.isEmpty {
             if let saved = perAppEnabled[frontBid] {
@@ -177,7 +177,7 @@ public final class MacInputTapService {
         fastHotkey = newSettings.hotkey
         fastUseCapsLock = newSettings.useCapsLockToSwitch
         fastFixChrome = newSettings.fixChromiumAutocomplete
-        fastIsExcludedApp = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings)
+        fastIsExcludedApp = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings, perAppEnabled: perAppEnabled)
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
         if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
             perAppEnabled[currentBundleID] = newSettings.isEnabled
@@ -332,7 +332,7 @@ public final class MacInputTapService {
             self.currentBundleID = bid
             self.currentAppName = name
             self.engine.reset()
-            let isExcluded = Self.computeIsAppExcluded(bundleID: bid, appName: name, settings: self.settings)
+            let isExcluded = Self.computeIsAppExcluded(bundleID: bid, appName: name, settings: self.settings, perAppEnabled: self.perAppEnabled)
             self.fastIsExcludedApp = isExcluded
             var switchedLanguage: Bool?
             if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
@@ -499,6 +499,7 @@ public final class MacInputTapService {
     }
 
     private func handleFlagsChanged(_ event: CGEvent) {
+        if fastIsExcludedApp { return }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let hotkey = fastHotkey
         let useCaps = fastUseCapsLock
@@ -551,6 +552,13 @@ public final class MacInputTapService {
     }
 
     private func handleKeyDown(proxy: CGEventTapProxy, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // Fast-path bypass for excluded applications (Windows App, Remote Desktop, VPS clients):
+        // Pass all keystrokes through immediately with 0 delay, 0 backspaces, 0 state mutation.
+        // Also preserves Windows shortcuts (Ctrl+Space for IntelliSense, Alt+keys, etc.) without swallowing!
+        if fastIsExcludedApp {
+            return Unmanaged.passUnretained(event)
+        }
+
         let flags = event.flags
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let hotkey = fastHotkey
@@ -568,11 +576,6 @@ public final class MacInputTapService {
         // Master switch guard: if Vietnamese IME is disabled, pass all keystrokes through immediately.
         // Zero delay, zero state lock, zero backspace or escape interception.
         guard isEnabled else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        // Excluded applications guard: pass all keystrokes through immediately.
-        if fastIsExcludedApp {
             return Unmanaged.passUnretained(event)
         }
 
