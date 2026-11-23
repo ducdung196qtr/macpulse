@@ -592,11 +592,49 @@ public final class VietnameseEngine {
             if hasPendingUndoMismatch {
                 hasPendingUndoMismatch = false
                 let rawLower = String(rawKeys).lowercased()
-                if rawLower.hasPrefix("ress") {
-                    if let firstS = rawKeys.firstIndex(of: "s"), firstS + 1 < rawKeys.count, rawKeys[firstS + 1] == "s" {
-                        rawKeys.remove(at: firstS + 1)
+
+                var shouldDeduplicate = false
+
+                // Rule 1: English prefixes 'res-', 'des-', 'dis-' always have a single consonant
+                if rawLower.hasPrefix("ress") || rawLower.hasPrefix("dess") || rawLower.hasPrefix("diss") {
+                    shouldDeduplicate = true
+                }
+
+                // Rule 2: In English phonotactics, diphthongs (au, ou, ai, oi, ea, ee, oo, ui) are NEVER followed by double consonants
+                let diphthongs = ["auss", "ouss", "aiss", "oiss", "eass", "ooss", "uiss", "auff", "ouff", "aurr", "ourr"]
+                for d in diphthongs {
+                    if rawLower.contains(d) {
+                        shouldDeduplicate = true
+                        break
                     }
                 }
+
+                // Rule 3: Magic E endings (-se, -fe, -re) in native English words are preceded by a single consonant
+                let magicEEndings = ["asse", "osse", "usse", "isse", "affe", "iffe", "arre", "orre", "irre", "urre", "erse", "arse", "orse", "urse"]
+                for m in magicEEndings {
+                    if rawLower.hasSuffix(m) {
+                        shouldDeduplicate = true
+                        break
+                    }
+                }
+
+                if shouldDeduplicate {
+                    // Stems with intentional double consonants in English must never be deduplicated
+                    let doubleStems = ["diff", "coff", "pass", "mess", "poss", "sess", "err", "arr", "traff", "off"]
+                    for stem in doubleStems {
+                        if rawLower.hasPrefix(stem) {
+                            shouldDeduplicate = false
+                            break
+                        }
+                    }
+                }
+
+                if shouldDeduplicate {
+                    if let dupIdx = findDoubleUndoConsonantIndex(in: rawKeys) {
+                        rawKeys.remove(at: dupIdx)
+                    }
+                }
+
                 slots = rawKeys.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
                 let raw = String(rawKeys)
                 return diffAction(from: prevDisplayed, to: raw)
@@ -1229,6 +1267,7 @@ public final class VietnameseEngine {
         // Tech, programming & developer terms
         "post", "get", "set", "test", "user", "admin", "login", "reset", "format",
         "password", "email", "server", "client", "docker", "react", "swift", "git",
+        "pause", "cause", "close", "house", "different", "coffee",
         "status", "commit", "push", "pull", "branch", "merge", "checkout", "true",
         "false", "null", "class", "import", "export", "function", "return", "const",
         "table", "column", "row", "view", "page", "site", "chat", "link", "text",
@@ -1420,6 +1459,19 @@ public final class VietnameseEngine {
         let backspaces = pChars.count - common
         let replacement = String(nChars[common...])
         return .replace(backspaceCount: backspaces, text: replacement)
+    }
+
+    private func findDoubleUndoConsonantIndex(in keys: [Character]) -> Int? {
+        let toneChars: Set<Character> = ["s", "f", "r", "x", "j"]
+        guard keys.count >= 2 else { return nil }
+        for i in 0..<(keys.count - 1) {
+            let lower1 = Character(keys[i].lowercased())
+            let lower2 = Character(keys[i + 1].lowercased())
+            if toneChars.contains(lower1) && lower1 == lower2 {
+                return i + 1
+            }
+        }
+        return nil
     }
 
     private func isPrintableWordDelimiter(_ char: Character) -> Bool {
