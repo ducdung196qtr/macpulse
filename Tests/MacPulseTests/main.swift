@@ -781,5 +781,25 @@ suite.test("VietnameseAppDetector recognizes VPS, Remote Desktop and Terminal ap
     try expect(VietnameseAppDetector.computeIsAppExcluded(bundleID: "com.custom.vpswrapper", appName: "", settings: settings), "Custom excluded bundle must be bypassed")
 }
 
+suite.test("IME 41: Natural typing of English prefixes and words (reset, result, exit, user, design, password)") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    // Direct in-flight typing without delimiter
+    try expectEqual(eng.simulate("reset"), "reset")
+    try expectEqual(eng.simulate("result"), "result")
+    try expectEqual(eng.simulate("exit"), "exit")
+    try expectEqual(eng.simulate("user"), "user")
+    try expectEqual(eng.simulate("design"), "design")
+
+    // Typing with space delimiter
+    try expectEqual(eng.simulate("reset "), "reset ")
+    try expectEqual(eng.simulate("resset "), "reset ")
+    try expectEqual(eng.simulate("result "), "result ")
+    try expectEqual(eng.simulate("ressult "), "result ")
+    try expectEqual(eng.simulate("password "), "password ")
+    try expectEqual(eng.simulate("different "), "different ")
+    try expectEqual(eng.simulate("coffee "), "coffee ")
+    try expectEqual(eng.simulate("error "), "error ")
+}
+
 suite.summaryAndExit()
 

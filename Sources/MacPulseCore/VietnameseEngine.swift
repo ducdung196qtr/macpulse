@@ -591,6 +591,12 @@ public final class VietnameseEngine {
             slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
             if hasPendingUndoMismatch {
                 hasPendingUndoMismatch = false
+                let rawLower = String(rawKeys).lowercased()
+                if rawLower.hasPrefix("ress") {
+                    if let firstS = rawKeys.firstIndex(of: "s"), firstS + 1 < rawKeys.count, rawKeys[firstS + 1] == "s" {
+                        rawKeys.remove(at: firstS + 1)
+                    }
+                }
                 slots = rawKeys.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
                 let raw = String(rawKeys)
                 return diffAction(from: prevDisplayed, to: raw)
@@ -671,6 +677,33 @@ public final class VietnameseEngine {
                     if let action = tryApplyTone(toneCmd, char: effectiveChar, prevRendered: prevRendered) {
                         return action
                     }
+                }
+            }
+        }
+
+        // In-flight English word recognition & tone unroll:
+        // In Vietnamese phonotactics, a vowel can NEVER follow a tone mark unless it forms a valid diphthong/triphthong.
+        // If a tone was applied and the user types a vowel that cannot form a valid Vietnamese syllable,
+        // the tone key was actually a literal English consonant (e.g. 're' + 's' + 'e' -> 'reset', 're' + 's' + 'u' -> 'result',
+        // 'ba' + 's' + 'i' -> 'basic', 'e' + 'x' + 'i' -> 'exit', 'u' + 's' + 'e' -> 'user').
+        if settings.spellCheckEnabled && tone != .none, let tk = toneKey {
+            let isVowel = (lower == "a" || lower == "e" || lower == "i" || lower == "o" || lower == "u" || lower == "y")
+            let sInfo = analyzeSyllable(slots)
+            if isVowel && sInfo.codaRange.isEmpty {
+                var candidate = slots
+                candidate.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+                if !isSyllablePrefixValid(slots: candidate, tone: tone) {
+                    tone = .none
+                    toneKey = nil
+                    if tk.isLetter {
+                        slots.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
+                    }
+                    slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+                    rawKeys = slots.map { renderChar(base: $0.base, shape: .plain, tone: .none, upper: $0.isUpper) }
+                    hasPendingUndoMismatch = false
+                    isRestoredToRaw = true
+                    let nextRendered = render(slots: slots, tone: tone)
+                    return diffAction(from: prevRendered, to: nextRendered)
                 }
             }
         }
@@ -777,6 +810,7 @@ public final class VietnameseEngine {
     }
 
     private func tryApplyCircumflex(char: Character, lower: Character, prevRendered: String, isVNI: Bool) -> KeyAction? {
+        guard tone == .none else { return nil }
         let targets: [Character] = isVNI ? ["a", "e", "o"] : [lower]
         let sInfo = analyzeSyllable(slots)
 
@@ -996,13 +1030,13 @@ public final class VietnameseEngine {
                 toneKey = nil
                 undoneTone = targetTone
                 let lower = Character(char.lowercased())
-                rawKeys.append(char)
-                hasPendingUndoMismatch = true
                 if lower >= "a" && lower <= "z" {
                     slots.append(CharSlot(base: lower, shape: .plain, isUpper: char.isUppercase))
                 } else {
                     isRestoredToRaw = true
                 }
+                rawKeys.append(char)
+                hasPendingUndoMismatch = true
                 if settings.spellCheckEnabled && !isSyllablePrefixValid(slots: slots, tone: tone) {
                     isRestoredToRaw = true
                 }
@@ -1019,6 +1053,7 @@ public final class VietnameseEngine {
             }
 
             tone = targetTone
+            toneKey = char
             undoneTone = nil
             rawKeys.append(char)
             let nextRendered = render(slots: slots, tone: tone)
