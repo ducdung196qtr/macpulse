@@ -15,6 +15,7 @@ struct VietnameseView: View {
                 systemInputSourceBanner
                 modeAndHotkeyCard
                 optionsCard
+                vpsAndExcludedAppsCard
                 macroCard
                 scratchpadCard
             }
@@ -259,6 +260,105 @@ struct VietnameseView: View {
                     }
                 }
                 .padding(.top, 2)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var vpsAndExcludedAppsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "server.rack")
+                    .foregroundStyle(.blue)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Bảo vệ gõ trên VPS & Remote Desktop")
+                        .font(.headline)
+                    Text("Tự động chuyển Tiếng Anh khi vào VPS / Remote để không dính dấu hay giật lag")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $vm.imeSettings.autoBypassVPSAndRemote) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Tự động tắt tiếng Việt khi mở VPS / Remote Desktop")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Hỗ trợ Microsoft Remote Desktop, AnyDesk, RustDesk, TeamViewer, VNC, Termius, Royal TSX, Parallels...")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Toggle(isOn: $vm.imeSettings.autoBypassTerminal) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Tự động dùng Tiếng Anh trong Terminal / iTerm2 / Warp")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Tránh gõ nhầm dấu khi gõ lệnh shell, SSH, nano, vim, docker. Vẫn có thể bấm phím tắt bật lại khi cần.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+
+            // Current app quick exclude action
+            let frontBid = vm.frontmostBundleID
+            let frontName = vm.frontmostAppName.isEmpty ? frontBid : vm.frontmostAppName
+            if !frontBid.isEmpty && frontBid != Bundle.main.bundleIdentifier {
+                let isExcluded = vm.imeSettings.excludedBundleIDs.contains(frontBid)
+                HStack(spacing: 8) {
+                    Image(systemName: isExcluded ? "checkmark.circle.fill" : "app.dashed")
+                        .foregroundStyle(isExcluded ? .green : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("App hiện tại: \(frontName)")
+                            .font(.caption.weight(.medium))
+                        Text(isExcluded ? "Đang trong danh sách loại trừ (Luôn gõ Tiếng Anh)" : "Bấm nút bên cạnh để luôn gõ Tiếng Anh trên app này")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(isExcluded ? "Bỏ loại trừ" : "Loại trừ app này") {
+                        if isExcluded {
+                            vm.removeAppFromExcluded(frontBid)
+                        } else {
+                            vm.addAppToExcluded(frontBid)
+                        }
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.bordered)
+                }
+                .padding(8)
+                .background(isExcluded ? Color.green.opacity(0.08) : Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            // Excluded list
+            if !vm.imeSettings.excludedBundleIDs.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Danh sách app tự thêm loại trừ (\(vm.imeSettings.excludedBundleIDs.count)):")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(vm.imeSettings.excludedBundleIDs, id: \.self) { bid in
+                        HStack {
+                            Text(bid)
+                                .font(.caption2.monospaced())
+                            Spacer()
+                            Button {
+                                vm.removeAppFromExcluded(bid)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .padding(.horizontal, 4)
             }
         }
         .padding(10)

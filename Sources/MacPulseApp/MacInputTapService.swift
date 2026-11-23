@@ -52,15 +52,20 @@ public final class MacInputTapService {
         "com.microsoft.teams2"
     ]
 
-    private static let terminalOrEditorBundles: Set<String> = [
-        "com.apple.Terminal",
-        "com.googlecode.iterm2",
-        "dev.warp.Warp-Stable",
-        "net.kovidgoyal.kitty",
-        "com.github.wez.wezterm",
-        "com.microsoft.VSCode",
-        "com.todesktop.230313mzl4w4u92"
-    ]
+    public static var vpsAndRemoteDesktopBundles: Set<String> { VietnameseAppDetector.vpsAndRemoteDesktopBundles }
+    public static var terminalAndShellBundles: Set<String> { VietnameseAppDetector.terminalAndShellBundles }
+
+    public static func isVPSOrRemoteApp(bundleID: String, appName: String = "") -> Bool {
+        VietnameseAppDetector.isVPSOrRemoteApp(bundleID: bundleID, appName: appName)
+    }
+
+    public static func isTerminalApp(bundleID: String, appName: String = "") -> Bool {
+        VietnameseAppDetector.isTerminalApp(bundleID: bundleID, appName: appName)
+    }
+
+    public static func computeIsAppExcluded(bundleID: String, appName: String, settings: VietnameseSettings) -> Bool {
+        VietnameseAppDetector.computeIsAppExcluded(bundleID: bundleID, appName: appName, settings: settings)
+    }
 
     private static let conflictBundleMap: [(bundleID: String, label: String)] = [
         ("com.lamquangminh.EVKey", "EVKey"),
@@ -81,6 +86,7 @@ public final class MacInputTapService {
     private var fastHotkey: VietnameseHotkey
     private var fastUseCapsLock: Bool
     private var fastFixChrome: Bool
+    private var fastIsExcludedApp: Bool
 
     private var eventSource: CGEventSource?
     private var backspaceDownEvent: CGEvent?
@@ -111,8 +117,21 @@ public final class MacInputTapService {
         self.fastUseCapsLock = settings.useCapsLockToSwitch
         self.fastFixChrome = settings.fixChromiumAutocomplete
         let front = NSWorkspace.shared.frontmostApplication
-        self.currentBundleID = front?.bundleIdentifier ?? ""
-        self.currentAppName = front?.localizedName ?? ""
+        let frontBid = front?.bundleIdentifier ?? ""
+        let frontName = front?.localizedName ?? frontBid
+        self.currentBundleID = frontBid
+        self.currentAppName = frontName
+        let isExcluded = Self.computeIsAppExcluded(bundleID: frontBid, appName: frontName, settings: settings)
+        self.fastIsExcludedApp = isExcluded
+        if settings.smartSwitchPerApp && !frontBid.isEmpty {
+            if let saved = perAppEnabled[frontBid] {
+                self.fastIsEnabled = saved
+                self.settings.isEnabled = saved
+            } else if isExcluded {
+                self.fastIsEnabled = false
+                self.settings.isEnabled = false
+            }
+        }
         // Use private state event source so synthetic events NEVER contaminate hardware HID device state
         self.eventSource = CGEventSource(stateID: .privateState)
 
@@ -158,11 +177,9 @@ public final class MacInputTapService {
         fastHotkey = newSettings.hotkey
         fastUseCapsLock = newSettings.useCapsLockToSwitch
         fastFixChrome = newSettings.fixChromiumAutocomplete
+        fastIsExcludedApp = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings)
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
-        if !newSettings.isEnabled {
-            // When user explicitly disables IME, clear per-app state so no app silently re-enables it
-            perAppEnabled.removeAll()
-        } else if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
+        if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
             perAppEnabled[currentBundleID] = newSettings.isEnabled
         }
         engine.reset()
@@ -315,16 +332,26 @@ public final class MacInputTapService {
             self.currentBundleID = bid
             self.currentAppName = name
             self.engine.reset()
+            let isExcluded = Self.computeIsAppExcluded(bundleID: bid, appName: name, settings: self.settings)
+            self.fastIsExcludedApp = isExcluded
             var switchedLanguage: Bool?
-            // Only apply per-app memory if the IME is currently enabled globally.
-            // If the user turned off the IME, switching apps must NEVER re-enable it automatically!
-            if self.settings.isEnabled && self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid,
-               let saved = self.perAppEnabled[bid],
-               saved != self.settings.isEnabled {
-                self.settings.isEnabled = saved
-                self.fastIsEnabled = saved
-                self.engine.settings = self.settings
-                switchedLanguage = saved
+            if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
+                if let saved = self.perAppEnabled[bid] {
+                    if saved != self.settings.isEnabled {
+                        self.settings.isEnabled = saved
+                        self.fastIsEnabled = saved
+                        self.engine.settings = self.settings
+                        switchedLanguage = saved
+                    }
+                } else if isExcluded {
+                    // VPS, Remote Desktop or Terminal app without explicit override defaults to English!
+                    if self.settings.isEnabled {
+                        self.settings.isEnabled = false
+                        self.fastIsEnabled = false
+                        self.engine.settings = self.settings
+                        switchedLanguage = false
+                    }
+                }
             }
             os_unfair_lock_unlock(&self.stateLock)
 
@@ -544,6 +571,11 @@ public final class MacInputTapService {
             return Unmanaged.passUnretained(event)
         }
 
+        // Excluded applications guard: pass all keystrokes through immediately.
+        if fastIsExcludedApp {
+            return Unmanaged.passUnretained(event)
+        }
+
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskSecondaryFn) {
             os_unfair_lock_lock(&stateLock)
             engine.reset()
@@ -622,10 +654,7 @@ public final class MacInputTapService {
         engine.reset()
         let bid = currentBundleID
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
-        if !nextEnabled {
-            // When turning off, clear per-app state so other apps don't silently re-enable IME
-            perAppEnabled.removeAll()
-        } else if settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
+        if settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
             perAppEnabled[bid] = nextEnabled
         }
         let playSound = settings.soundOnSwitch

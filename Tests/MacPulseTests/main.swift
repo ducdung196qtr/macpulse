@@ -741,5 +741,42 @@ suite.test("AITokenMonitor: detects local AI platforms and calculates token metr
     }
 }
 
+suite.test("VietnameseAppDetector recognizes VPS, Remote Desktop and Terminal apps") {
+    // VPS & Remote Desktop
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.rdc.macos"), "Microsoft Remote Desktop should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.rdc.mac"), "Windows App should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.philandro.anydesk"), "AnyDesk should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.carriez.rustdesk"), "RustDesk should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.realvnc.vncviewer"), "RealVNC should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.termius-desktop"), "Termius should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.lemonmojo.RoyalTSX.App"), "Royal TSX should be detected as VPS")
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "custom.app", appName: "AnyDesk"), "AnyDesk by name should be detected")
+
+    // Non-VPS apps must NOT match
+    try expect(!VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.google.Chrome"), "Chrome is not a VPS app")
+    try expect(!VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "org.telegram.desktop"), "Telegram is not a VPS app")
+    try expect(!VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.apple.Notes"), "Notes is not a VPS app")
+
+    // Terminal apps
+    try expect(VietnameseAppDetector.isTerminalApp(bundleID: "com.apple.Terminal"), "Apple Terminal should be detected")
+    try expect(VietnameseAppDetector.isTerminalApp(bundleID: "com.googlecode.iterm2"), "iTerm2 should be detected")
+    try expect(VietnameseAppDetector.isTerminalApp(bundleID: "dev.warp.Warp-Stable"), "Warp should be detected")
+
+    // Exclusion computation
+    var settings = VietnameseSettings()
+    settings.autoBypassVPSAndRemote = true
+    settings.autoBypassTerminal = true
+    try expect(VietnameseAppDetector.computeIsAppExcluded(bundleID: "com.microsoft.rdc.macos", appName: "", settings: settings), "RDC must be excluded when autoBypassVPS is true")
+    try expect(VietnameseAppDetector.computeIsAppExcluded(bundleID: "com.apple.Terminal", appName: "", settings: settings), "Terminal must be excluded when autoBypassTerminal is true")
+
+    // Disabling autoBypassVPS
+    settings.autoBypassVPSAndRemote = false
+    try expect(!VietnameseAppDetector.computeIsAppExcluded(bundleID: "com.microsoft.rdc.macos", appName: "", settings: settings), "RDC not excluded when autoBypassVPS is false")
+
+    // Custom excluded list
+    settings.excludedBundleIDs = ["com.custom.vpswrapper"]
+    try expect(VietnameseAppDetector.computeIsAppExcluded(bundleID: "com.custom.vpswrapper", appName: "", settings: settings), "Custom excluded bundle must be bypassed")
+}
+
 suite.summaryAndExit()
 

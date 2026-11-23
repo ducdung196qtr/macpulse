@@ -271,6 +271,20 @@ public final class AppViewModel: ObservableObject {
         actionNotice = "Đã xoá danh sách nhớ Việt/Anh theo từng ứng dụng."
     }
 
+    public func addAppToExcluded(_ bundleID: String) {
+        guard !bundleID.isEmpty else { return }
+        guard !imeSettings.excludedBundleIDs.contains(bundleID) else { return }
+        imeSettings.excludedBundleIDs.append(bundleID)
+        inputTapService.updateSettings(imeSettings)
+        persistIMEConfig()
+    }
+
+    public func removeAppFromExcluded(_ bundleID: String) {
+        imeSettings.excludedBundleIDs.removeAll(where: { $0 == bundleID })
+        inputTapService.updateSettings(imeSettings)
+        persistIMEConfig()
+    }
+
     public func refreshIMEEnvironment() {
         isAccessibilityTrusted = MacInputTapService.isAccessibilityTrusted(prompt: false)
         conflictingApps = MacInputTapService.detectConflictingApps()

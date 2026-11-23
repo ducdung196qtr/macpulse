@@ -55,6 +55,9 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
     public var quickTelex: Bool
     public var smartEnglishRestore: Bool
     public var autoCapitalize: Bool
+    public var autoBypassVPSAndRemote: Bool
+    public var autoBypassTerminal: Bool
+    public var excludedBundleIDs: [String]
 
     public static let defaultMacroTable: [String: String] = [
         "vn": "Việt Nam",
@@ -104,7 +107,10 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         useCapsLockToSwitch: Bool = false,
         quickTelex: Bool = false,
         smartEnglishRestore: Bool = true,
-        autoCapitalize: Bool = false
+        autoCapitalize: Bool = false,
+        autoBypassVPSAndRemote: Bool = true,
+        autoBypassTerminal: Bool = true,
+        excludedBundleIDs: [String] = []
     ) {
         self.isEnabled = isEnabled
         self.inputMethod = inputMethod
@@ -124,6 +130,9 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.quickTelex = quickTelex
         self.smartEnglishRestore = smartEnglishRestore
         self.autoCapitalize = autoCapitalize
+        self.autoBypassVPSAndRemote = autoBypassVPSAndRemote
+        self.autoBypassTerminal = autoBypassTerminal
+        self.excludedBundleIDs = excludedBundleIDs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -145,6 +154,9 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         case quickTelex
         case smartEnglishRestore
         case autoCapitalize
+        case autoBypassVPSAndRemote
+        case autoBypassTerminal
+        case excludedBundleIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -167,6 +179,102 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.quickTelex = try container.decodeIfPresent(Bool.self, forKey: .quickTelex) ?? true
         self.smartEnglishRestore = try container.decodeIfPresent(Bool.self, forKey: .smartEnglishRestore) ?? true
         self.autoCapitalize = try container.decodeIfPresent(Bool.self, forKey: .autoCapitalize) ?? false
+        self.autoBypassVPSAndRemote = try container.decodeIfPresent(Bool.self, forKey: .autoBypassVPSAndRemote) ?? true
+        self.autoBypassTerminal = try container.decodeIfPresent(Bool.self, forKey: .autoBypassTerminal) ?? true
+        self.excludedBundleIDs = try container.decodeIfPresent([String].self, forKey: .excludedBundleIDs) ?? []
+    }
+}
+
+public enum VietnameseAppDetector {
+    public static let vpsAndRemoteDesktopBundles: Set<String> = [
+        // Microsoft Remote Desktop / Windows App
+        "com.microsoft.rdc.macos",
+        "com.microsoft.rdc.osx",
+        "com.microsoft.rdc.mac",
+        "com.microsoft.rdc.osx.beta",
+        // AnyDesk, RustDesk, TeamViewer
+        "com.philandro.anydesk",
+        "com.carriez.rustdesk",
+        "com.teamviewer.TeamViewer",
+        // VNC clients
+        "com.realvnc.vncviewer",
+        "com.tigervnc.vncviewer",
+        "de.tightvnc.viewer",
+        // Enterprise Remote Desktop & VPS
+        "com.parallels.ras.client",
+        "com.citrix.receiver.nomas",
+        "com.vmware.horizon",
+        "com.lemonmojo.RoyalTSX.App",
+        "com.termius-desktop",
+        "com.termius.mac",
+        "com.google.chromeremotedesktop",
+        "com.splashtop.Splashtop-Streamer",
+        "com.splashtop.Splashtop-Remote",
+        "com.moonlight-stream.Moonlight",
+        "tv.parsec.parsec",
+        "com.remotedesktopmanager",
+        "com.fluidapp.FluidApp2",
+        // Virtual Machines
+        "com.utmapp.UTM",
+        "com.parallels.desktop.console",
+        "com.vmware.fusion",
+        "org.virtualbox.app.VirtualBox"
+    ]
+
+    public static let terminalAndShellBundles: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.Warp-Stable",
+        "net.kovidgoyal.kitty",
+        "com.github.wez.wezterm",
+        "co.zeit.hyper",
+        "io.alacritty",
+        "org.tabby",
+        "com.vandyke.SecureCRT",
+        "com.panic.Nova"
+    ]
+
+    public static func isVPSOrRemoteApp(bundleID: String, appName: String = "") -> Bool {
+        if vpsAndRemoteDesktopBundles.contains(bundleID) { return true }
+        let bLower = bundleID.lowercased()
+        let nLower = appName.lowercased()
+        if bLower.contains("remotedesktop") || bLower.contains("rdc") || bLower.contains("anydesk")
+            || bLower.contains("rustdesk") || bLower.contains("teamviewer") || bLower.contains("vnc")
+            || bLower.contains("termius") || bLower.contains("putty") || bLower.contains("royaltsx") {
+            return true
+        }
+        if nLower.contains("remote desktop") || nLower.contains("anydesk") || nLower.contains("rustdesk")
+            || nLower.contains("teamviewer") || nLower.contains("vnc viewer") || nLower.contains("termius") {
+            return true
+        }
+        return false
+    }
+
+    public static func isTerminalApp(bundleID: String, appName: String = "") -> Bool {
+        if terminalAndShellBundles.contains(bundleID) { return true }
+        let bLower = bundleID.lowercased()
+        let nLower = appName.lowercased()
+        if bLower.contains("terminal") || bLower.contains("iterm") || bLower.contains("warp") {
+            return true
+        }
+        if nLower == "terminal" || nLower.contains("iterm") || nLower == "warp" {
+            return true
+        }
+        return false
+    }
+
+    public static func computeIsAppExcluded(bundleID: String, appName: String, settings: VietnameseSettings) -> Bool {
+        guard !bundleID.isEmpty else { return false }
+        if settings.autoBypassVPSAndRemote && isVPSOrRemoteApp(bundleID: bundleID, appName: appName) {
+            return true
+        }
+        if settings.autoBypassTerminal && isTerminalApp(bundleID: bundleID, appName: appName) {
+            return true
+        }
+        if settings.excludedBundleIDs.contains(bundleID) {
+            return true
+        }
+        return false
     }
 }
 
