@@ -374,6 +374,12 @@ public enum ProcessScanner {
             || proc.comm.lowercased().hasPrefix("google chrome")
     }
 
+    public static func isChromeRendererProcess(_ proc: RawProcessInfo) -> Bool {
+        guard isAnyGoogleChromeProcess(proc) else { return false }
+        let lower = proc.args.lowercased()
+        return lower.contains("--type=renderer") || proc.comm.contains("Renderer")
+    }
+
     private static func extractBinaryName(from args: String) -> String {
         let beforeFlags = args.components(separatedBy: " --").first ?? args
         return URL(fileURLWithPath: beforeFlags.trimmingCharacters(in: .whitespaces)).lastPathComponent

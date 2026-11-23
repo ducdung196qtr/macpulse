@@ -88,19 +88,6 @@ public enum CleanupExecutor {
             }
         }
 
-        if candidates.contains(where: { $0.id == "cache-chrome" }) {
-            // Unblock Chrome: clean broken SingletonLock/DevToolsActivePort and terminate orphan headless Chrome blockers
-            for lockURL in chromeLockPaths(homeDirectory: homeDirectory) {
-                guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) else { continue }
-                var st = Darwin.stat()
-                if lstat(lockURL.path, &st) == 0 {
-                    _ = Darwin.unlink(lockURL.path)
-                    try? fm.removeItem(at: lockURL)
-                }
-            }
-            _ = terminateOrphanPuppeteerProcesses(force: false)
-        }
-
         return CleanupOutcome(freedBytes: freed, processedCount: count, errors: errors)
     }
 
@@ -129,42 +116,50 @@ public enum CleanupExecutor {
         var errors: [String] = []
 
         if !skipProcessTermination {
-            if let live = try? ProcessScanner.scanLiveProcesses() {
-                let chromeProcs = live.filter { ProcessScanner.isAnyGoogleChromeProcess($0) }
-                let pids = Array(Set(chromeProcs.map(\.pid)))
-                if !pids.isEmpty {
-                    let termRes = terminatePIDs(pids, force: false)
-                    stoppedPIDs.append(contentsOf: termRes.killed)
+            // 1. Gracefully tell Chrome to quit so it can flush state and save active tabs
+            let tellQuit = Process()
+            tellQuit.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            tellQuit.arguments = ["-e", "tell application \"Google Chrome\" to quit"]
+            try? tellQuit.run()
+            tellQuit.waitUntilExit()
 
-                    for _ in 0..<10 {
-                        let remaining = pids.filter { kill($0, 0) == 0 }
-                        if remaining.isEmpty { break }
-                        usleep(150_000)
-                    }
-                    let stubborn = pids.filter { kill($0, 0) == 0 }
-                    if !stubborn.isEmpty {
-                        let killRes = terminatePIDs(stubborn, force: true)
-                        for pid in killRes.killed where !stoppedPIDs.contains(pid) {
-                            stoppedPIDs.append(pid)
-                        }
-                        usleep(200_000)
-                    }
+            // 2. Wait up to 1.2s for clean exit
+            for _ in 0..<8 {
+                if let live = try? ProcessScanner.scanLiveProcesses(),
+                   !live.contains(where: { ProcessScanner.isAnyGoogleChromeProcess($0) }) {
+                    break
+                }
+                usleep(150_000)
+            }
+
+            // 3. Force terminate stubborn hung renderers or orphan helpers
+            if let live = try? ProcessScanner.scanLiveProcesses() {
+                let remainingChrome = live.filter { ProcessScanner.isAnyGoogleChromeProcess($0) }
+                let pids = Array(Set(remainingChrome.map(\.pid)))
+                if !pids.isEmpty {
+                    let killRes = terminatePIDs(pids, force: true)
+                    stoppedPIDs.append(contentsOf: killRes.killed)
+                    usleep(150_000)
                 }
             }
         }
 
-        for lockURL in chromeLockPaths(homeDirectory: homeDirectory) {
-            guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) else { continue }
-            var st = Darwin.stat()
-            if lstat(lockURL.path, &st) == 0 {
-                if Darwin.unlink(lockURL.path) == 0 {
-                    removedLocks.append(lockURL.lastPathComponent)
-                } else {
-                    do {
-                        try fm.removeItem(at: lockURL)
+        // Only remove locks if Chrome is not running or if skipProcessTermination is true (e.g. testing)
+        let isStillRunning = !skipProcessTermination && ((try? ProcessScanner.scanLiveProcesses())?.contains(where: { ProcessScanner.isAnyGoogleChromeProcess($0) }) ?? false)
+        if !isStillRunning {
+            for lockURL in chromeLockPaths(homeDirectory: homeDirectory) {
+                guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) else { continue }
+                var st = Darwin.stat()
+                if lstat(lockURL.path, &st) == 0 {
+                    if Darwin.unlink(lockURL.path) == 0 {
                         removedLocks.append(lockURL.lastPathComponent)
-                    } catch {
-                        errors.append("Không gỡ được \(lockURL.lastPathComponent): \(error.localizedDescription)")
+                    } else {
+                        do {
+                            try fm.removeItem(at: lockURL)
+                            removedLocks.append(lockURL.lastPathComponent)
+                        } catch {
+                            errors.append("Không gỡ được \(lockURL.lastPathComponent): \(error.localizedDescription)")
+                        }
                     }
                 }
             }
@@ -244,6 +239,22 @@ public enum CleanupExecutor {
             }
         }
         return (killed, failed)
+    }
+
+    /// Kills stuck Chrome helper renderers (tabs pegged on high CPU or hung during local dev tasks)
+    /// without closing the Chrome app, preserving other windows, tabs, DevTools, and extensions.
+    public static func killStuckChromeRenderers(minCPUPercent: Double = 12.0, forceAllRenderers: Bool = false) -> (killedPIDs: [Int32], totalCPUFreed: Double) {
+        guard let live = try? ProcessScanner.scanLiveProcesses() else { return ([], 0) }
+        let targetRenderers = live.filter { proc in
+            guard ProcessScanner.isChromeRendererProcess(proc) else { return false }
+            if forceAllRenderers { return true }
+            return proc.cpuPercent >= minCPUPercent
+        }
+        let pids = Array(Set(targetRenderers.map(\.pid)))
+        guard !pids.isEmpty else { return ([], 0) }
+        let totalCPU = targetRenderers.reduce(0.0) { $0 + $1.cpuPercent }
+        let res = terminatePIDs(pids, force: true)
+        return (res.killed, totalCPU)
     }
 
     public static func terminatePIDs(_ pids: [Int32], force: Bool = false) -> (killed: [Int32], failed: [Int32]) {

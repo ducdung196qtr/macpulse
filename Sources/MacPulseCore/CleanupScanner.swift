@@ -87,7 +87,7 @@ public final class CleanupScanner {
 
         // 2. Cache Trình duyệt Web
         let browserSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
-            ("cache-chrome", "Cache Google Chrome (Web, GPU/Shader & Service Worker)", "Xoá cache web, GPU/Shader & CacheStorage mọi Profile; giữ nguyên tài khoản, mật khẩu, bookmark & tab.", chromePaths, true),
+            ("cache-chrome", "Cache Web Google Chrome", "Chỉ xoá bộ đệm web tạm (~/Library/Caches). 100% an toàn: bảo vệ tuyệt đối Extension, Service Worker, tab và tài khoản.", chromePaths, true),
             ("cache-edge", "Cache Microsoft Edge", "Chỉ xoá file đệm tạm của Edge; giữ nguyên đăng nhập.", ["Library/Caches/Microsoft Edge"], true),
             ("cache-safari", "Cache Safari", "Chỉ xoá file đệm trình duyệt Safari; không mất bookmark/lịch sử.", ["Library/Caches/com.apple.Safari"], true),
             ("cache-arc", "Cache Arc Browser", "Xoá file đệm web & shader của Arc Browser; giữ nguyên tab và Space.", ["Library/Caches/company.thebrowser.Browser"], true)
@@ -225,41 +225,10 @@ public final class CleanupScanner {
 
 
     public static func chromeCacheRelativePaths(homeDirectory: URL) -> [String] {
-        var rels: [String] = [
-            "Library/Caches/Google/Chrome",
-            "Library/Application Support/Google/Chrome/GrShaderCache",
-            "Library/Application Support/Google/Chrome/GraphiteDawnCache",
-            "Library/Application Support/Google/Chrome/GPUPersistentCache",
-            "Library/Application Support/Google/Chrome/ShaderCache"
+        // macOS pure OS cache for Chrome (safely purgeable, never contains extensions, tabs, or user data)
+        return [
+            "Library/Caches/Google/Chrome"
         ]
-        let appSupportChrome = homeDirectory.appendingPathComponent("Library/Application Support/Google/Chrome")
-        if let entries = try? FileManager.default.contentsOfDirectory(
-            at: appSupportChrome,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            let profileCacheSubdirs = [
-                "Cache",
-                "Code Cache",
-                "GPUCache",
-                "DawnGraphiteCache",
-                "DawnWebGPUCache",
-                "Service Worker/CacheStorage",
-                "Service Worker/ScriptCache"
-            ]
-            for entry in entries {
-                let name = entry.lastPathComponent
-                let isProfile = name == "Default"
-                    || name == "Guest Profile"
-                    || name == "System Profile"
-                    || name.hasPrefix("Profile ")
-                guard isProfile else { continue }
-                for sub in profileCacheSubdirs {
-                    rels.append("Library/Application Support/Google/Chrome/\(name)/\(sub)")
-                }
-            }
-        }
-        return rels
     }
 
     public static func chromeCachePaths(homeDirectory: URL) -> [URL] {

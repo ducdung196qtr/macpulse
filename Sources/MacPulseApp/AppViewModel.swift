@@ -67,6 +67,7 @@ public final class AppViewModel: ObservableObject {
 
     @Published public var snapshot: SystemSnapshot?
     @Published public var processGroups: [ProcessGroupSummary] = []
+    @Published public var rawProcesses: [RawProcessInfo] = []
     @Published public var healthReport: HealthReport?
     @Published public var lastUpdated: Date = Date()
 
@@ -336,19 +337,23 @@ public final class AppViewModel: ObservableObject {
             let snap = try? telemetry.captureSnapshot()
             var groups = cachedGroups
             var scannedProcs = false
+            var scannedRaw: [RawProcessInfo] = []
             if includeProcesses || cachedGroups.isEmpty {
                 let procs = (try? ProcessScanner.scanLiveProcesses()) ?? []
                 groups = ProcessScanner.aggregate(procs)
+                scannedRaw = procs
                 scannedProcs = true
             }
             let report = snap.map { HealthAnalyzer.analyze(snapshot: $0, processGroups: groups) }
             let didScanProcs = scannedProcs
             let finalGroups = groups
+            let finalRaw = scannedRaw
 
             await MainActor.run {
                 if let snap { self.snapshot = snap }
                 if didScanProcs {
                     self.processGroups = finalGroups
+                    self.rawProcesses = finalRaw
                     self.lastProcessScanDate = Date()
                 }
                 if let report { self.healthReport = report }
@@ -498,6 +503,30 @@ public final class AppViewModel: ObservableObject {
         ramReclaimableGroups.reduce(0) { $0 + $1.totalRSSBytes }
     }
 
+    public var stuckChromeRenderers: [RawProcessInfo] {
+        rawProcesses.filter { ProcessScanner.isChromeRendererProcess($0) && $0.cpuPercent >= 12.0 }
+    }
+
+    public var totalChromeRenderers: [RawProcessInfo] {
+        rawProcesses.filter { ProcessScanner.isChromeRendererProcess($0) }
+    }
+
+    public func killStuckChromeRenderers(forceAll: Bool = false) {
+        guard !isRescuingChrome else { return }
+        Task.detached(priority: .userInitiated) {
+            let (killed, cpuFreed) = CleanupExecutor.killStuckChromeRenderers(minCPUPercent: 12.0, forceAllRenderers: forceAll)
+            await MainActor.run {
+                if killed.isEmpty {
+                    self.actionNotice = "Không phát hiện tab/task Chrome nào đang bị kẹt hoặc ngốn CPU."
+                } else {
+                    let cpuStr = String(format: "%.1f%%", cpuFreed)
+                    self.actionNotice = "Đã gỡ kẹt \(killed.count) tab/task Chrome treo (thu hồi \(cpuStr) CPU). Trình duyệt đã mượt mà trở lại!"
+                    self.cleanupOutcomeMessage = self.actionNotice
+                }
+                self.refreshNow(includeProcesses: true)
+            }
+        }
+    }
 
     public func rescueAndCleanChrome(relaunch: Bool = true) {
         guard !isRescuingChrome && !isCleaning else { return }

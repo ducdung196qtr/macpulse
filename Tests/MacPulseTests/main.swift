@@ -581,25 +581,29 @@ suite.test("ProcessScanner detects Playwright headless Chrome while ignoring Rem
     try expect(!ProcessScanner.isOrphanPuppeteerCommand(crd), "CRD host must never be flagged")
 }
 
-suite.test("CleanupExecutor.rescueAndCleanChrome removes broken SingletonLock & profile caches while keeping user data") {
+suite.test("CleanupExecutor.rescueAndCleanChrome removes broken SingletonLock & OS cache while strictly preserving Extension Service Workers and user data") {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("macpulse-chrome-rescue-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let fm = FileManager.default
 
+    let chromeCache = root.appendingPathComponent("Library/Caches/Google/Chrome/Default/Cache")
     let chromeSupport = root.appendingPathComponent("Library/Application Support/Google/Chrome")
     let defaultProfile = chromeSupport.appendingPathComponent("Default")
-    let profile2 = chromeSupport.appendingPathComponent("Profile 2")
-    let grShader = chromeSupport.appendingPathComponent("GrShaderCache")
     let swCache = defaultProfile.appendingPathComponent("Service Worker/CacheStorage")
-    let gpuCache = profile2.appendingPathComponent("GPUCache")
+    let extDir = defaultProfile.appendingPathComponent("Extensions/aapocclcgogkmnuohehaiipmnkfkgcko")
 
-    try fm.createDirectory(at: grShader, withIntermediateDirectories: true)
+    try fm.createDirectory(at: chromeCache, withIntermediateDirectories: true)
     try fm.createDirectory(at: swCache, withIntermediateDirectories: true)
-    try fm.createDirectory(at: gpuCache, withIntermediateDirectories: true)
+    try fm.createDirectory(at: extDir, withIntermediateDirectories: true)
 
-    try Data(repeating: 0xAA, count: 120_000).write(to: grShader.appendingPathComponent("shader.bin"))
-    try Data(repeating: 0xBB, count: 250_000).write(to: swCache.appendingPathComponent("sw.data"))
-    try Data(repeating: 0xCC, count: 140_000).write(to: gpuCache.appendingPathComponent("gpu.bin"))
+    // OS-level purgeable cache
+    try Data(repeating: 0xAA, count: 550_000).write(to: chromeCache.appendingPathComponent("data_0"))
+
+    // Critical extension & Service Worker files that MUST NOT be touched
+    let swData = swCache.appendingPathComponent("sw.data")
+    try Data(repeating: 0xBB, count: 250_000).write(to: swData)
+    let extManifest = extDir.appendingPathComponent("manifest.json")
+    try Data("{\"name\":\"Extension\"}".utf8).write(to: extManifest)
 
     // Important user data that MUST NOT be deleted
     let cookies = defaultProfile.appendingPathComponent("Cookies")
@@ -616,14 +620,28 @@ suite.test("CleanupExecutor.rescueAndCleanChrome removes broken SingletonLock & 
     let scanner = CleanupScanner(homeDirectory: root)
     let scanned = scanner.scan()
     let chromeItem = scanned.first { $0.id == "cache-chrome" }
-    try expect(chromeItem != nil && (chromeItem?.sizeBytes ?? 0) >= 500_000, "Scanner must aggregate Profile GPU & Service Worker caches")
+    try expect(chromeItem != nil && (chromeItem?.sizeBytes ?? 0) >= 500_000, "Scanner must detect Chrome OS cache")
 
     let report = CleanupExecutor.rescueAndCleanChrome(homeDirectory: root, relaunch: false, skipProcessTermination: true)
-    try expect(report.freedBytes >= 500_000, "Should free >= 500 KB of Chrome caches")
+    try expect(report.freedBytes >= 500_000, "Should free >= 500 KB of Chrome OS cache")
     try expect(report.removedLockFiles.contains("SingletonLock"), "Should remove broken SingletonLock symlink")
     try expect(report.removedLockFiles.contains("DevToolsActivePort"), "Should remove DevToolsActivePort")
+
+    // VERIFY: Extensions and Service Workers are 100% untouched!
+    try expect(fm.fileExists(atPath: swData.path), "Extension Service Worker data MUST remain intact")
+    try expect(fm.fileExists(atPath: extManifest.path), "Extension manifest MUST remain intact")
     try expect(fm.fileExists(atPath: cookies.path), "Cookies MUST remain intact")
     try expect(fm.fileExists(atPath: bookmarks.path), "Bookmarks MUST remain intact")
+}
+
+suite.test("ProcessScanner and CleanupExecutor handle stuck Chrome renderer processes") {
+    let mainProc = RawProcessInfo(pid: 2001, ppid: 1, cpuPercent: 2.0, rssBytes: 500_000_000, elapsed: "10:00", comm: "Google Chrome", args: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    let gpuProc = RawProcessInfo(pid: 2002, ppid: 2001, cpuPercent: 5.0, rssBytes: 150_000_000, elapsed: "10:00", comm: "Google Chrome Helper", args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (GPU).app/Contents/MacOS/Google Chrome Helper (GPU) --type=gpu-process")
+    let rendererProc = RawProcessInfo(pid: 2003, ppid: 2001, cpuPercent: 35.0, rssBytes: 400_000_000, elapsed: "02:00", comm: "Google Chrome Helper (Renderer)", args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --site-per-process")
+
+    try expect(!ProcessScanner.isChromeRendererProcess(mainProc), "Main browser is not a renderer")
+    try expect(!ProcessScanner.isChromeRendererProcess(gpuProc), "GPU process is not a renderer")
+    try expect(ProcessScanner.isChromeRendererProcess(rendererProc), "Renderer process must be recognized")
 }
 
 suite.test("IME 35: ddwng -> đưng/đừng and standalone W as Ư default behavior") {

@@ -40,7 +40,9 @@ struct CleanerView: View {
 
                     heroSummaryCard
 
-                    chromeRescueCard
+                    if visibleFilter == .all || visibleFilter == .browser {
+                        chromeRescueCard
+                    }
 
                     if visibleFilter == .all || visibleFilter == .ai {
                         aiSection
@@ -390,58 +392,149 @@ struct CleanerView: View {
 
     private var chromeRescueCard: some View {
         let chromeCacheSize = vm.browserCandidates.first(where: { $0.id == "cache-chrome" })?.sizeBytes ?? 0
-        let hasOrphan = vm.processGroups.contains(where: { $0.isOrphanAutomation })
-        return VStack(alignment: .leading, spacing: 8) {
+        let stuckCount = vm.stuckChromeRenderers.count
+        let totalStuckCPU = vm.stuckChromeRenderers.reduce(0.0) { $0 + $1.cpuPercent }
+        let totalChromeProcs = vm.processGroups.first(where: { $0.id == "app:Google Chrome" })?.processCount ?? 0
+
+        return VStack(alignment: .leading, spacing: 10) {
+            // Header
             HStack(spacing: 8) {
-                Image(systemName: "wrench.and.screwdriver.fill")
+                Image(systemName: "lifepreserver.fill")
                     .foregroundStyle(.blue)
-                Text("Sửa lỗi & Dọn sạch Chrome (1-Click)")
-                    .font(.subheadline.weight(.bold))
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cứu & Gỡ Đơ Google Chrome")
+                        .font(.headline)
+                    Text("Khắc phục Chrome bị treo do task local, ngốn CPU hoặc không mở được")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if chromeCacheSize > 0 {
-                    Text(Formatters.bytes(chromeCacheSize))
+                    Text("Cache: \(Formatters.bytes(chromeCacheSize))")
                         .font(.caption2.monospacedDigit().weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.12), in: Capsule())
                         .foregroundStyle(.blue)
                 }
             }
 
-            Text(hasOrphan
-                 ? "Phát hiện Chrome headless/automation đang chạy ngầm (có thể chặn mở Chrome). Bấm nút dưới để dọn sạch toàn bộ tiến trình kẹt, gỡ SingletonLock & xoá sạch Cache."
-                 : "Khi Chrome bị lag, ăn CPU cao hoặc bấm không mở được: đóng sạch Chrome & tiến trình ngầm kẹt, gỡ lock, xoá GPU/Shader & Service Worker Cache (giữ nguyên tài khoản, mật khẩu, bookmark) và mở lại Chrome.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Button(vm.isRescuingChrome ? "Đang sửa Chrome..." : "Sửa lỗi & Mở lại Chrome") {
-                    vm.rescueAndCleanChrome(relaunch: true)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-                .controlSize(.small)
-                .disabled(vm.isRescuingChrome || vm.isCleaning)
-
-                Button("Chỉ dọn sạch") {
-                    vm.rescueAndCleanChrome(relaunch: false)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(vm.isRescuingChrome || vm.isCleaning)
+            // Safety reassurance notice
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
+                Text("Bảo vệ tuyệt đối: Không mất Extension, không mất tab đang mở, không mất đăng nhập & cookie.")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+
+            // Action 1: Stuck Renderers / Local Task Freezing
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: stuckCount > 0 ? "exclamationmark.triangle.fill" : "bolt.horizontal.fill")
+                        .foregroundStyle(stuckCount > 0 ? .orange : .secondary)
+                    Text("Gỡ đơ tab/task Chrome đang kẹt (Localhost / Dev Server)")
+                        .font(.caption.weight(.bold))
+                    Spacer()
+                    if stuckCount > 0 {
+                        Text("\(stuckCount) task ngốn \(String(format: "%.0f%%", totalStuckCPU)) CPU")
+                            .font(.caption2.monospacedDigit().weight(.bold))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text("Khi Chrome bị đơ ở tab localhost, build hay vòng lặp JS: Chỉ dừng tiến trình render của tab đó (hiện trang Aw Snap để F5). Toàn bộ cửa sổ khác, tab khác và Extension vẫn mở nguyên vẹn.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button {
+                        vm.killStuckChromeRenderers(forceAll: false)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "bolt.fill")
+                            Text(stuckCount > 0 ? "Gỡ kẹt ngay (\(stuckCount) tab treo)" : "Kiểm tra & Gỡ kẹt tab đơ")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(stuckCount > 0 ? .orange : .blue)
+                    .controlSize(.small)
+
+                    if totalChromeProcs > 0 {
+                        Button("Gỡ tất cả tab đang treo") {
+                            vm.killStuckChromeRenderers(forceAll: true)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Buộc crash mọi renderer đang kẹt để Chrome phục hồi ngay lập tức mà không tắt app")
+                    }
+                }
+            }
+            .padding(9)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(stuckCount > 0 ? Color.orange.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+
+            // Action 2: Full Rescue & Clean Restart
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .foregroundStyle(.blue)
+                    Text("Khởi động lại sạch Chrome (Khắc phục đơ hoàn toàn)")
+                        .font(.caption.weight(.bold))
+                }
+
+                Text("Khi Chrome treo hoàn toàn không bấm được gì: Đóng nhẹ nhàng (lưu lại phiên tab), dọn sạch lock kẹt và tiến trình ngầm, làm sạch cache web tạm và tự động mở lại Chrome mượt mà.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button(vm.isRescuingChrome ? "Đang cứu Chrome..." : "Khởi động lại sạch Chrome") {
+                        vm.rescueAndCleanChrome(relaunch: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    .controlSize(.small)
+                    .disabled(vm.isRescuingChrome || vm.isCleaning)
+
+                    Button("Chỉ tắt & dọn lock") {
+                        vm.rescueAndCleanChrome(relaunch: false)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(vm.isRescuingChrome || vm.isCleaning)
+                }
+            }
+            .padding(9)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
         }
-        .padding(10)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             ZStack {
-                RoundedRectangle(cornerRadius: 9)
+                RoundedRectangle(cornerRadius: 10)
                     .fill(Color(nsColor: .controlBackgroundColor))
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(Color.blue.opacity(0.04))
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.blue.opacity(0.03))
             }
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(Color.blue.opacity(0.22), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.blue.opacity(0.20), lineWidth: 1)
         )
     }
 
