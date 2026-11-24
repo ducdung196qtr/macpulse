@@ -873,6 +873,60 @@ suite.test("IME 42: Comprehensive quá and qu-onset typing resilience") {
     try expectEqual(telexVni.simulate("qu1a "), "quá ")
 }
 
+suite.test("IME 43: Test and commonly mistyped English words natural typing") {
+    let store = VietnameseSettingsStore()
+    let saved = store.load().settings
+    let engSaved = VietnameseEngine(settings: saved)
+
+    // Direct in-flight typing & double-key undo typing
+    try expectEqual(engSaved.simulate("test"), "test")
+    try expectEqual(engSaved.simulate("test "), "test ")
+    try expectEqual(engSaved.simulate("tesst"), "test")
+    try expectEqual(engSaved.simulate("tesst "), "test ")
+
+    try expectEqual(engSaved.simulate("best"), "best")
+    try expectEqual(engSaved.simulate("best "), "best ")
+    try expectEqual(engSaved.simulate("besst"), "best")
+    try expectEqual(engSaved.simulate("besst "), "best ")
+
+    try expectEqual(engSaved.simulate("list"), "list")
+    try expectEqual(engSaved.simulate("list "), "list ")
+    try expectEqual(engSaved.simulate("lisst"), "list")
+    try expectEqual(engSaved.simulate("lisst "), "list ")
+
+    try expectEqual(engSaved.simulate("post"), "post")
+    try expectEqual(engSaved.simulate("post "), "post ")
+    try expectEqual(engSaved.simulate("posst"), "post")
+    try expectEqual(engSaved.simulate("posst "), "post ")
+
+    try expectEqual(engSaved.simulate("fast"), "fast")
+    try expectEqual(engSaved.simulate("fast "), "fast ")
+    try expectEqual(engSaved.simulate("fasst "), "fast ")
+    try expectEqual(engSaved.simulate("last"), "last")
+    try expectEqual(engSaved.simulate("lasst"), "last")
+    try expectEqual(engSaved.simulate("cost"), "cost")
+    try expectEqual(engSaved.simulate("cosst"), "cost")
+    try expectEqual(engSaved.simulate("just"), "just")
+    try expectEqual(engSaved.simulate("just "), "just ")
+    try expectEqual(engSaved.simulate("jusst "), "just ")
+    try expectEqual(engSaved.simulate("must"), "must")
+    try expectEqual(engSaved.simulate("musst"), "must")
+
+    // Inflections & Developer words
+    try expectEqual(engSaved.simulate("testing "), "testing ")
+    try expectEqual(engSaved.simulate("tested "), "tested ")
+    try expectEqual(engSaved.simulate("posting "), "posting ")
+    try expectEqual(engSaved.simulate("listing "), "listing ")
+
+    // Intentional double stems must be preserved
+    try expectEqual(engSaved.simulate("pass "), "pass ")
+    try expectEqual(engSaved.simulate("password "), "password ")
+    try expectEqual(engSaved.simulate("different "), "different ")
+    try expectEqual(engSaved.simulate("coffee "), "coffee ")
+    try expectEqual(engSaved.simulate("message "), "message ")
+    try expectEqual(engSaved.simulate("error "), "error ")
+}
+
 suite.summaryAndExit()
 
 

@@ -453,12 +453,23 @@ public final class VietnameseEngine {
         }
 
         // Smart English Words Auto-Restore
-        if settings.smartEnglishRestore && !slots.isEmpty && !raw.isEmpty && prevRendered != raw {
+        if settings.smartEnglishRestore && !slots.isEmpty && !raw.isEmpty {
             let lowerRaw = raw.lowercased()
             let endsInToneOrHorn = lowerRaw.hasSuffix("s") || lowerRaw.hasSuffix("f") || lowerRaw.hasSuffix("r") || lowerRaw.hasSuffix("x") || lowerRaw.hasSuffix("j") || lowerRaw.hasSuffix("w")
             if !(lowerRaw.count <= 3 && endsInToneOrHorn) {
                 if Self.commonEnglishWords.contains(lowerRaw) {
                     return .replace(backspaceCount: prevRendered.count, text: raw + String(char))
+                }
+            }
+            // Check if raw contains a duplicate tone undo consonant that maps to a common English word
+            // e.g. 'tesst' -> 'test', 'posst' -> 'post', 'lisst' -> 'list', 'besst' -> 'best', 'pausse' -> 'pause', 'resset' -> 'reset'
+            if let dupIdx = findDoubleUndoConsonantIndex(in: Array(raw)) {
+                var deduped = Array(raw)
+                deduped.remove(at: dupIdx)
+                let dedupedStr = String(deduped)
+                let lowerDeduped = dedupedStr.lowercased()
+                if Self.commonEnglishWords.contains(lowerDeduped) {
+                    return .replace(backspaceCount: prevRendered.count, text: dedupedStr + String(char))
                 }
             }
         }
@@ -593,39 +604,22 @@ public final class VietnameseEngine {
                 hasPendingUndoMismatch = false
                 let rawLower = String(rawKeys).lowercased()
 
-                var shouldDeduplicate = false
+                var shouldDeduplicate = true
 
-                // Rule 1: English prefixes 'res-', 'des-', 'dis-' always have a single consonant
-                if rawLower.hasPrefix("ress") || rawLower.hasPrefix("dess") || rawLower.hasPrefix("diss") {
-                    shouldDeduplicate = true
-                }
-
-                // Rule 2: In English phonotactics, diphthongs (au, ou, ai, oi, ea, ee, oo, ui) are NEVER followed by double consonants
-                let diphthongs = ["auss", "ouss", "aiss", "oiss", "eass", "ooss", "uiss", "auff", "ouff", "aurr", "ourr"]
-                for d in diphthongs {
-                    if rawLower.contains(d) {
-                        shouldDeduplicate = true
-                        break
-                    }
-                }
-
-                // Rule 3: Magic E endings (-se, -fe, -re) in native English words are preceded by a single consonant
-                let magicEEndings = ["asse", "osse", "usse", "isse", "affe", "iffe", "arre", "orre", "irre", "urre", "erse", "arse", "orse", "urse"]
-                for m in magicEEndings {
-                    if rawLower.hasSuffix(m) {
-                        shouldDeduplicate = true
-                        break
-                    }
-                }
-
-                if shouldDeduplicate {
-                    // Stems with intentional double consonants in English must never be deduplicated
-                    let doubleStems = ["diff", "coff", "pass", "mess", "poss", "sess", "err", "arr", "traff", "off"]
-                    for stem in doubleStems {
-                        if rawLower.hasPrefix(stem) {
-                            shouldDeduplicate = false
-                            break
+                // Stems with intentional double consonants in English must never be deduplicated
+                let doubleStems = [
+                    "diff", "coff", "pass", "mess", "poss", "sess", "err", "arr", "traff", "off",
+                    "miss", "less", "boss", "kiss", "cross", "press", "stress", "status",
+                    "staff", "stuff", "class", "glass", "grass"
+                ]
+                for stem in doubleStems {
+                    if rawLower.hasPrefix(stem) {
+                        // In English phonotactics, double consonants are never followed by 't', 'd', 'k' (e.g. 'post', 'past', 'test')
+                        if rawLower.hasPrefix(stem + "t") || rawLower.hasPrefix(stem + "d") || rawLower.hasPrefix(stem + "k") {
+                            continue
                         }
+                        shouldDeduplicate = false
+                        break
                     }
                 }
 
@@ -734,28 +728,44 @@ public final class VietnameseEngine {
 
         // In-flight English word recognition & tone unroll:
         // In Vietnamese phonotactics, a vowel can NEVER follow a tone mark unless it forms a valid diphthong/triphthong.
-        // If a tone was applied and the user types a vowel that cannot form a valid Vietnamese syllable,
-        // the tone key was actually a literal English consonant (e.g. 're' + 's' + 'e' -> 'reset', 're' + 's' + 'u' -> 'result',
-        // 'ba' + 's' + 'i' -> 'basic', 'e' + 'x' + 'i' -> 'exit', 'u' + 's' + 'e' -> 'user').
+        // Also, Vietnamese codas can NEVER be consonant clusters (e.g. 'st', 'rt', 'rd', 'rk', 'ft').
+        // If a tone was applied and typing the next character forms an English word/stem or invalid Vietnamese syllable,
+        // unroll the tone key back into a literal consonant (e.g. 'té' + 't' -> 'test', 're' + 's' + 'e' -> 'reset').
         if settings.spellCheckEnabled && tone != .none, let tk = toneKey {
             let isVowel = (lower == "a" || lower == "e" || lower == "i" || lower == "o" || lower == "u" || lower == "y")
             let sInfo = analyzeSyllable(slots)
+            var shouldUnroll = false
+
             if isVowel && sInfo.codaRange.isEmpty {
                 var candidate = slots
                 candidate.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
                 if !isSyllablePrefixValid(slots: candidate, tone: tone) {
-                    tone = .none
-                    toneKey = nil
-                    if tk.isLetter {
-                        slots.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
-                    }
-                    slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
-                    rawKeys = slots.map { renderChar(base: $0.base, shape: .plain, tone: .none, upper: $0.isUpper) }
-                    hasPendingUndoMismatch = false
-                    isRestoredToRaw = true
-                    let nextRendered = render(slots: slots, tone: tone)
-                    return diffAction(from: prevRendered, to: nextRendered)
+                    shouldUnroll = true
                 }
+            } else if !isVowel && sInfo.codaRange.isEmpty {
+                var unrolled = slots
+                if tk.isLetter {
+                    unrolled.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
+                }
+                unrolled.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+                let unrolledStr = unrolled.map { String($0.base) }.joined().lowercased()
+                if Self.commonEnglishWords.contains(unrolledStr) || Self.commonEnglishStems.contains(unrolledStr) {
+                    shouldUnroll = true
+                }
+            }
+
+            if shouldUnroll {
+                tone = .none
+                toneKey = nil
+                if tk.isLetter {
+                    slots.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
+                }
+                slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+                rawKeys = slots.map { renderChar(base: $0.base, shape: .plain, tone: .none, upper: $0.isUpper) }
+                hasPendingUndoMismatch = false
+                isRestoredToRaw = true
+                let nextRendered = render(slots: slots, tone: tone)
+                return diffAction(from: prevRendered, to: nextRendered)
             }
         }
 
@@ -1330,7 +1340,28 @@ public final class VietnameseEngine {
         "share", "follow", "story", "reel", "note", "poll", "vote",
         "quiz", "meme", "trend", "viral", "blog", "vlog", "podcast", "cast",
         "broadcast", "channel", "sub", "hit", "rule", "safe", "name", "zone",
-        "rate", "gate", "tree", "blue", "mode", "role"
+        "rate", "gate", "tree", "blue", "mode", "role",
+
+        // Frequently mistyped English words & developer inflections
+        "tests", "testing", "tested", "tester", "testers",
+        "posts", "posting", "posted", "lists", "listing", "listed",
+        "costs", "costing", "costly", "faster", "fastest",
+        "lasting", "lasted", "trusted", "trusting", "exists", "existing", "existed",
+        "systems", "systematic", "install", "installed", "installing",
+        "instance", "instances", "constant", "constants", "request", "requests", "requested",
+        "suggest", "suggests", "suggested", "resets", "results",
+        "cards", "parts", "starts", "started", "starting",
+        "forms", "formed", "forming", "works", "worked", "working",
+        "turns", "turned", "turning", "pauses", "paused", "pausing",
+        "causes", "caused", "causing", "cases", "based", "closes", "closed",
+        "draft", "craft", "lift", "gift", "soft", "left", "dust", "rust", "burst"
+    ]
+
+    public static let commonEnglishStems: Set<String> = [
+        "test", "best", "rest", "list", "post", "cost", "fast", "last", "must", "just",
+        "dust", "rust", "trust", "burst", "first", "exist", "artist", "custom", "system",
+        "instal", "master", "poster", "card", "part", "start", "form", "work", "mark",
+        "turn", "burn", "learn", "alert", "court", "short", "shirt", "draft", "craft", "lift", "gift", "soft"
     ]
 
     private func canAcceptVietnameseTransforms(slots: [CharSlot]) -> Bool {
