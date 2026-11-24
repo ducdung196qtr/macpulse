@@ -675,6 +675,19 @@ public final class VietnameseEngine {
                         rawKeys.append(effectiveChar)
                         let nextRendered = render(slots: slots, tone: tone)
                         return diffAction(from: prevRendered, to: nextRendered)
+                    } else if first == "q" {
+                        // Quick Telex q + vowel -> qu + vowel (e.g. qa->qua, qas->quá, qan->quan, qen->quen, qy->quy)
+                        let quickVowels: Set<Character> = ["a", "e", "i", "o", "y"]
+                        if quickVowels.contains(lower) {
+                            slots = [
+                                CharSlot(base: "q", shape: .plain, isUpper: slots[0].isUpper),
+                                CharSlot(base: "u", shape: .plain, isUpper: false, isQuickTelex: true, quickTelexKey: "q"),
+                                CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase)
+                            ]
+                            rawKeys.append(effectiveChar)
+                            let nextRendered = render(slots: slots, tone: tone)
+                            return diffAction(from: prevRendered, to: nextRendered)
+                        }
                     }
                 } else if slots.count == 2 && slots[1].isQuickTelex && slots[1].quickTelexKey == lower {
                     // Undo quick telex on 3rd identical tap (e.g. ccc -> cc, kkk -> kk)
@@ -1045,7 +1058,8 @@ public final class VietnameseEngine {
 
     private func tryApplyTone(_ cmd: ToneAction, char: Character, prevRendered: String) -> KeyAction? {
         let sInfo = analyzeSyllable(slots)
-        guard !sInfo.vowelRange.isEmpty else { return nil }
+        let isQUOnset = (slots.count == 2 && slots[0].base == "q" && slots[1].base == "u")
+        guard !sInfo.vowelRange.isEmpty || (settings.freeMark && isQUOnset) else { return nil }
 
         if !settings.freeMark && !sInfo.codaRange.isEmpty {
             return nil
@@ -1186,7 +1200,12 @@ public final class VietnameseEngine {
     private func toneTargetIndex(in list: [CharSlot], structure s: SyllableStructure) -> Int? {
         let vStart = s.vowelRange.lowerBound
         let vCount = s.vowelRange.count
-        guard vCount > 0 else { return nil }
+        guard vCount > 0 else {
+            if list.count == 2 && list[0].base == "q" && list[1].base == "u" {
+                return 1
+            }
+            return nil
+        }
         if vCount == 1 { return vStart }
 
         for i in vStart..<(s.vowelRange.upperBound - 1) {

@@ -831,5 +831,48 @@ suite.test("IME 41: Natural typing of English prefixes and words (reset, result,
     try expectEqual(eng.simulate("error "), "error ")
 }
 
+suite.test("IME 42: Comprehensive quá and qu-onset typing resilience") {
+    // 1. Saved settings from user store
+    let store = VietnameseSettingsStore()
+    let saved = store.load().settings
+    let engSaved = VietnameseEngine(settings: saved)
+
+    try expectEqual(engSaved.simulate("quas"), "quá")
+    try expectEqual(engSaved.simulate("quas "), "quá ")
+    try expectEqual(engSaved.simulate("\"quas\""), "\"quá\"")
+    try expectEqual(engSaved.simulate("quas\""), "quá\"")
+    try expectEqual(engSaved.simulate("'quas'"), "'quá'")
+    try expectEqual(engSaved.simulate("quas,"), "quá,")
+    try expectEqual(engSaved.simulate("quas."), "quá.")
+    try expectEqual(engSaved.simulate("qqas"), "quá")
+    try expectEqual(engSaved.simulate("qqas "), "quá ")
+    try expectEqual(engSaved.simulate("qas"), "quá")
+    try expectEqual(engSaved.simulate("qas "), "quá ")
+    try expectEqual(engSaved.simulate("qan "), "quan ")
+    try expectEqual(engSaved.simulate("qen "), "quen ")
+    try expectEqual(engSaved.simulate("qes "), "qué ")
+    try expectEqual(engSaved.simulate("qy "), "quy ")
+    try expectEqual(engSaved.simulate("qys "), "quý ")
+    try expectEqual(engSaved.simulate("qusa"), "quá")
+    try expectEqual(engSaved.simulate("qusa "), "quá ")
+
+    // 2. Default Telex settings
+    let telexDefault = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    try expectEqual(telexDefault.simulate("quas"), "quá")
+    try expectEqual(telexDefault.simulate("quas "), "quá ")
+    try expectEqual(telexDefault.simulate("qusa"), "quá")
+    try expectEqual(telexDefault.simulate("qusa "), "quá ")
+
+    // 3. Hybrid Telex + VNI
+    let telexVni = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telexAndVni))
+    try expectEqual(telexVni.simulate("quas"), "quá")
+    try expectEqual(telexVni.simulate("quas "), "quá ")
+    try expectEqual(telexVni.simulate("qua1"), "quá")
+    try expectEqual(telexVni.simulate("qua1 "), "quá ")
+    try expectEqual(telexVni.simulate("qu1a"), "quá")
+    try expectEqual(telexVni.simulate("qu1a "), "quá ")
+}
+
 suite.summaryAndExit()
+
 

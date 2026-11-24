@@ -89,8 +89,6 @@ public final class MacInputTapService {
     private var fastIsExcludedApp: Bool
 
     private var eventSource: CGEventSource?
-    private var backspaceDownEvent: CGEvent?
-    private var backspaceUpEvent: CGEvent?
 
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
@@ -134,18 +132,6 @@ public final class MacInputTapService {
         }
         // Use private state event source so synthetic events NEVER contaminate hardware HID device state
         self.eventSource = CGEventSource(stateID: .privateState)
-
-        if let src = self.eventSource {
-            let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true)
-            down?.flags = []
-            down?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-            self.backspaceDownEvent = down
-
-            let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false)
-            up?.flags = []
-            up?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-            self.backspaceUpEvent = up
-        }
     }
 
     deinit {
@@ -360,6 +346,10 @@ public final class MacInputTapService {
                 if let lang = switchedLanguage {
                     self.onLanguageToggled?(lang, bid)
                 }
+            }
+
+            DispatchQueue.global(qos: .utility).async {
+                Self.terminateConflictingApps()
             }
         }
     }
@@ -708,39 +698,41 @@ public final class MacInputTapService {
         bundleID: String,
         fixChrome: Bool
     ) {
-        // Direct event injection via the active tap proxy with ZERO sleeps.
-        // Post pre-allocated backspaces immediately
+        guard let src = eventSource else { return }
+        let now = mach_absolute_time()
+
+        // Direct event injection via the active tap proxy with strictly monotonic timestamps.
         if backspaceCount > 0 {
-            for _ in 0..<backspaceCount {
-                if let down = backspaceDownEvent, let up = backspaceUpEvent {
+            for i in 0..<backspaceCount {
+                if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) {
+                    down.flags = []
+                    down.timestamp = now + UInt64(i * 2)
+                    down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     down.tapPostEvent(proxy)
+                }
+                if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
+                    up.flags = []
+                    up.timestamp = now + UInt64(i * 2 + 1)
+                    up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
-                } else if let src = eventSource {
-                    if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) {
-                        down.flags = []
-                        down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                        down.tapPostEvent(proxy)
-                    }
-                    if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
-                        up.flags = []
-                        up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                        up.tapPostEvent(proxy)
-                    }
                 }
             }
         }
 
-        // Post replacement string at once in a single event pair (zero loop, zero sleep)
-        if !text.isEmpty, let src = eventSource {
+        // Post replacement string at once in a single event pair with strictly monotonic timestamp
+        if !text.isEmpty {
             var utf16 = Array(text.utf16)
+            let baseTime = now + UInt64(backspaceCount * 2)
             if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
                 down.flags = []
+                down.timestamp = baseTime + 1
                 down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                 down.tapPostEvent(proxy)
             }
             if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
                 up.flags = []
+                up.timestamp = baseTime + 2
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                 up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                 up.tapPostEvent(proxy)
