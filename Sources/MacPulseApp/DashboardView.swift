@@ -90,7 +90,6 @@ struct DashboardView: View {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(barColor)
                     .frame(width: max(3, 28 * CGFloat(max(0, min(1, remainingPct / 100.0)))))
-                    .shadow(color: barColor.opacity(0.75), radius: 2.5)
             }
             .frame(width: 28, height: 5)
             Text("\(Int(remainingPct.rounded()))%")
@@ -128,8 +127,6 @@ struct DashboardView: View {
                     Text(String(format: "%.0f%%", snap.cpu.totalBusyPercent))
                         .font(.system(size: 21, weight: .black, design: .monospaced))
                         .foregroundStyle(cpuColor)
-                        .shadow(color: cpuColor.opacity(0.45), radius: 4)
-                        .contentTransition(.numericText())
 
                     LiveSparklineView(samples: vm.cpuHistory, color: cpuColor, maxValue: 100, height: 26)
 
@@ -166,8 +163,6 @@ struct DashboardView: View {
                         Text(String(format: "%.1f GB", snap.memory.availableGB))
                             .font(.system(size: 21, weight: .black, design: .monospaced))
                             .foregroundStyle(ramColor)
-                            .shadow(color: ramColor.opacity(0.45), radius: 4)
-                            .contentTransition(.numericText())
 
                         VStack(spacing: 5) {
                             LiveSparklineView(samples: vm.ramHistory, color: ramColor, maxValue: 100, height: 15)
@@ -208,7 +203,6 @@ struct DashboardView: View {
                                 Text(String(format: "%.1f", snap.disk.availableGB))
                                     .font(.system(size: 21, weight: .black, design: .monospaced))
                                     .foregroundStyle(ssdColor)
-                                    .shadow(color: ssdColor.opacity(0.45), radius: 4)
                                 Text("GB KHẢ DỤNG")
                                     .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                                     .foregroundStyle(HudTheme.textMuted)
@@ -265,7 +259,6 @@ struct DashboardView: View {
                         Image(systemName: "checkmark.seal.fill")
                             .font(.system(size: 15))
                             .foregroundStyle(HudTheme.emerald)
-                            .shadow(color: HudTheme.emerald.opacity(0.6), radius: 3)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Toàn bộ hệ thống đang vận hành tối ưu")
                                 .font(.system(size: 11.5, weight: .bold))
@@ -286,7 +279,6 @@ struct DashboardView: View {
                             RoundedRectangle(cornerRadius: 2)
                                 .fill(accentColor)
                                 .frame(width: 3, height: 34)
-                                .shadow(color: accentColor.opacity(0.8), radius: 3)
 
                             Image(systemName: isCrit ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
                                 .font(.system(size: 13.5))
@@ -415,7 +407,7 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                 }
                 Spacer()
-                Text("Rê ⓘ xem chi tiết")
+                Text("Bấm ⓘ xem chi tiết")
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(HudTheme.textMuted)
             }
@@ -429,7 +421,7 @@ struct DashboardView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .hudCard(accent: HudTheme.textMuted, chamfer: 8, padding: 14)
             } else {
-                VStack(spacing: 5) {
+                LazyVStack(spacing: 5) {
                     ForEach(displayList) { group in
                         ProcessRowView(group: group, vm: vm, highlightRAM: false)
                     }

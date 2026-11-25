@@ -165,7 +165,6 @@ struct CleanerView: View {
                     Text(Formatters.bytes(vm.totalSafeCacheBytes))
                         .font(.system(size: 19, weight: .black, design: .monospaced))
                         .foregroundStyle(HudTheme.violet)
-                        .shadow(color: HudTheme.violet.opacity(0.45), radius: 4)
                     Text("Cache AI, trình duyệt & build — 0% mất code/tài khoản")
                         .font(.system(size: 9.5))
                         .foregroundStyle(HudTheme.textSecondary)
@@ -188,7 +187,6 @@ struct CleanerView: View {
                         Text(String(format: "%.1f GB TRỐNG", mem.availableGB))
                             .font(.system(size: 19, weight: .black, design: .monospaced))
                             .foregroundStyle(HudTheme.cyan)
-                            .shadow(color: HudTheme.cyan.opacity(0.45), radius: 4)
                         SegmentedMemoryBar(memory: mem, height: 4.5)
                     }
                     Text("Thu hồi ~\(Formatters.bytes(vm.estimatedReclaimableRAMBytes)) từ app thừa")
@@ -535,7 +533,7 @@ struct CleanerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
             } else {
-                VStack(spacing: 5) {
+                LazyVStack(spacing: 5) {
                     ForEach(items) { item in
                         CleanupRowView(item: item, vm: vm, maxSizeBytes: vm.maxCandidateSizeBytes)
                     }
@@ -569,7 +567,7 @@ struct CleanerView: View {
                 }
             }
 
-            VStack(spacing: 5) {
+            LazyVStack(spacing: 5) {
                 ForEach(vm.ramReclaimableGroups) { group in
                     ProcessRowView(group: group, vm: vm, highlightRAM: true)
                 }
@@ -665,7 +663,6 @@ private struct CleanupRowView: View {
                     Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                         .font(.system(size: 15.5))
                         .foregroundStyle(isSelected ? HudTheme.cyan : HudTheme.textMuted)
-                        .shadow(color: isSelected ? HudTheme.cyan.opacity(0.6) : .clear, radius: 3)
                         .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
@@ -711,7 +708,6 @@ private struct CleanupRowView: View {
                     Capsule()
                         .fill(itemIcon.color)
                         .frame(width: max(3, 46 * CGFloat(sizeRatio)))
-                        .shadow(color: itemIcon.color.opacity(0.6), radius: 2)
                 }
                 .frame(width: 46, height: 3)
             }

@@ -95,7 +95,6 @@ struct BenchmarkView: View {
                         Image(systemName: "speedometer")
                             .font(.system(size: 28))
                             .foregroundStyle(HudTheme.cyan)
-                            .shadow(color: HudTheme.cyan.opacity(0.6), radius: 5)
                         Text("SẴN SÀNG ĐO HIỆU NĂNG PHẦN CỨNG")
                             .font(.system(size: 11.5, weight: .black, design: .monospaced))
                             .foregroundStyle(HudTheme.textPrimary)
@@ -264,7 +263,6 @@ private struct BenchLabRow: View {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(accentColor)
-                    .shadow(color: accentColor.opacity(0.55), radius: 3)
                     .frame(width: 18)
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -283,7 +281,6 @@ private struct BenchLabRow: View {
                     Text(value)
                         .font(.system(size: 12, weight: .black, design: .monospaced))
                         .foregroundStyle(accentColor)
-                        .shadow(color: accentColor.opacity(0.45), radius: 3)
                 }
             }
 

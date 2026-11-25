@@ -40,7 +40,6 @@ struct VietnameseView: View {
                 Image(systemName: ready ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(accent)
-                    .shadow(color: accent.opacity(0.6), radius: 3)
             }
 
             VStack(alignment: .leading, spacing: 2) {

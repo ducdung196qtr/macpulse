@@ -34,21 +34,14 @@ enum HudTheme {
         endPoint: .bottomTrailing
     )
 
-    static let cyberButtonGradient = LinearGradient(
-        colors: [cyan.opacity(0.95), cobalt],
-        startPoint: .leading,
-        endPoint: .trailing
-    )
-
     static func primaryAccent(quantumMode: Bool) -> Color {
         quantumMode ? violet : cyan
     }
 }
 
-// Keep PulseTheme alias pointing to HudTheme so all references stay clean
 typealias PulseTheme = HudTheme
 
-// MARK: - 45-Degree Chamfered Sci-Fi Panel Shape (InsettableShape for crisp strokeBorder)
+// MARK: - 45-Degree Chamfered Sci-Fi Panel Shape (InsettableShape)
 struct ChamferedRect: InsettableShape {
     var cut: CGFloat = 10
     var cornerRadius: CGFloat = 4
@@ -62,21 +55,17 @@ struct ChamferedRect: InsettableShape {
 
     func path(in rawRect: CGRect) -> Path {
         let rect = rawRect.insetBy(dx: insetAmount, dy: insetAmount)
+        guard rect.width > 2, rect.height > 2 else { return Path(rect) }
         let c = min(cut, min(rect.width, rect.height) * 0.35)
         let r = min(cornerRadius, c * 0.5)
         var p = Path()
-        // Top-left (rounded)
         p.move(to: CGPoint(x: rect.minX + r, y: rect.minY))
-        // Top edge to top-right chamfer
         p.addLine(to: CGPoint(x: rect.maxX - c, y: rect.minY))
         p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + c))
-        // Right edge to bottom-right (rounded)
         p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
         p.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
-        // Bottom edge to bottom-left chamfer
         p.addLine(to: CGPoint(x: rect.minX + c, y: rect.maxY))
         p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - c))
-        // Left edge back to top-left
         p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
         p.addQuadCurve(to: CGPoint(x: rect.minX + r, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
         p.closeSubpath()
@@ -84,35 +73,31 @@ struct ChamferedRect: InsettableShape {
     }
 }
 
-// MARK: - Corner Targeting Reticle Brackets (⌜ ⌝ ⌞ ⌟)
-struct HudCornerBrackets: View {
-    let color: Color
-    var length: CGFloat = 7
-    var lineWidth: CGFloat = 1.25
+// MARK: - Lightweight Vector Corner Brackets (Zero GeometryReader overhead via Shape)
+struct HudCornerBracketsShape: Shape {
+    var length: CGFloat = 8
 
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-            Path { p in
-                // Top-left bracket
-                p.move(to: CGPoint(x: 1, y: length))
-                p.addLine(to: CGPoint(x: 1, y: 1))
-                p.addLine(to: CGPoint(x: length, y: 1))
-                // Bottom-right bracket
-                p.move(to: CGPoint(x: w - length, y: h - 1))
-                p.addLine(to: CGPoint(x: w - 1, y: h - 1))
-                p.addLine(to: CGPoint(x: w - 1, y: h - length))
-            }
-            .stroke(color.opacity(0.72), style: StrokeStyle(lineWidth: lineWidth, lineCap: .square))
-        }
-        .allowsHitTesting(false)
+    func path(in rect: CGRect) -> Path {
+        let l = min(length, min(rect.width, rect.height) * 0.3)
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX + 1, y: rect.minY + l))
+        p.addLine(to: CGPoint(x: rect.minX + 1, y: rect.minY + 1))
+        p.addLine(to: CGPoint(x: rect.minX + l, y: rect.minY + 1))
+
+        p.move(to: CGPoint(x: rect.maxX - l, y: rect.maxY - 1))
+        p.addLine(to: CGPoint(x: rect.maxX - 1, y: rect.maxY - 1))
+        p.addLine(to: CGPoint(x: rect.maxX - 1, y: rect.maxY - l))
+        return p
     }
 }
 
-// MARK: - Sci-Fi Blueprint Grid Background Canvas
-struct SciFiBackgroundCanvas: View {
+// MARK: - Metal-Cached Sci-Fi Blueprint Background (Rendered Once into GPU Texture)
+struct SciFiBackgroundCanvas: View, Equatable {
     let accent: Color
+
+    static func == (lhs: SciFiBackgroundCanvas, rhs: SciFiBackgroundCanvas) -> Bool {
+        lhs.accent == rhs.accent
+    }
 
     var body: some View {
         ZStack {
@@ -122,7 +107,6 @@ struct SciFiBackgroundCanvas: View {
                 endPoint: .bottomTrailing
             )
 
-            // Ambient holographic light leaks
             RadialGradient(
                 colors: [accent.opacity(0.14), .clear],
                 center: UnitPoint(x: 0.12, y: 0.04),
@@ -136,7 +120,6 @@ struct SciFiBackgroundCanvas: View {
                 endRadius: 260
             )
 
-            // Precision tactical micro-grid
             Canvas { ctx, size in
                 let step: CGFloat = 24
                 var path = Path()
@@ -152,14 +135,15 @@ struct SciFiBackgroundCanvas: View {
                     path.addLine(to: CGPoint(x: size.width, y: y))
                     y += step
                 }
-                ctx.stroke(path, with: .color(accent.opacity(0.038)), lineWidth: 0.6)
+                ctx.stroke(path, with: .color(accent.opacity(0.04)), lineWidth: 0.6)
             }
         }
+        .drawingGroup(opaque: true)
         .ignoresSafeArea()
     }
 }
 
-// MARK: - Holographic HUD Card Modifier
+// MARK: - Zero-Shadow High-Performance Holographic HUD Card
 struct HudCardModifier: ViewModifier {
     let accent: Color
     let chamfer: CGFloat
@@ -171,21 +155,21 @@ struct HudCardModifier: ViewModifier {
         content
             .padding(padding)
             .background(
-                ZStack {
-                    shape.fill(HudTheme.cardBg.opacity(0.92))
-                    shape.fill(
-                        LinearGradient(
-                            colors: [accent.opacity(0.11), accent.opacity(0.015), Color.clear],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+                shape.fill(
+                    LinearGradient(
+                        colors: [
+                            HudTheme.cardBgHi.opacity(0.95),
+                            HudTheme.cardBg.opacity(0.96)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
-                }
+                )
             )
             .overlay(
                 shape.strokeBorder(
                     LinearGradient(
-                        colors: [accent.opacity(0.50), accent.opacity(0.14), accent.opacity(0.32)],
+                        colors: [accent.opacity(0.55), accent.opacity(0.14), accent.opacity(0.32)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -194,10 +178,11 @@ struct HudCardModifier: ViewModifier {
             )
             .overlay {
                 if showBrackets {
-                    HudCornerBrackets(color: accent, length: 8, lineWidth: 1.3)
+                    HudCornerBracketsShape(length: 8)
+                        .stroke(accent.opacity(0.8), style: StrokeStyle(lineWidth: 1.3, lineCap: .square))
+                        .allowsHitTesting(false)
                 }
             }
-            .shadow(color: Color.black.opacity(0.32), radius: 6, y: 2)
     }
 }
 
@@ -211,13 +196,12 @@ extension View {
         modifier(HudCardModifier(accent: accent, chamfer: chamfer, padding: padding, showBrackets: showBrackets))
     }
 
-    // Backwards-compatible helper mapped to Sci-Fi HUD card
     func telemetryCard(accent: Color? = nil, cornerRadius: CGFloat = 10, padding: CGFloat = 11) -> some View {
         hudCard(accent: accent ?? HudTheme.cyan.opacity(0.65), chamfer: min(10, cornerRadius), padding: padding, showBrackets: accent != nil)
     }
 }
 
-// MARK: - Explicit Sci-Fi Action Buttons (Zero macOS Light-Mode Button Artifacts)
+// MARK: - Zero-Shadow Explicit Sci-Fi Button
 struct HudButton: View {
     let title: String
     var icon: String? = nil
@@ -230,6 +214,7 @@ struct HudButton: View {
     @State private var hovering = false
 
     var body: some View {
+        let shape = ChamferedRect(cut: compact ? 5 : 6, cornerRadius: 3)
         Button(action: action) {
             HStack(spacing: compact ? 3.5 : 5) {
                 if let icon {
@@ -243,19 +228,16 @@ struct HudButton: View {
             .padding(.horizontal, compact ? 7.5 : 10)
             .padding(.vertical, compact ? 4 : 5.5)
             .background(
-                ChamferedRect(cut: compact ? 5 : 6, cornerRadius: 3)
-                    .fill(
-                        filled
-                            ? color.opacity(hovering ? 0.34 : 0.22)
-                            : HudTheme.insetBg.opacity(hovering ? 0.95 : 0.78)
-                    )
+                shape.fill(
+                    filled
+                        ? color.opacity(hovering ? 0.36 : 0.24)
+                        : HudTheme.insetBg.opacity(hovering ? 1.0 : 0.85)
+                )
             )
             .overlay(
-                ChamferedRect(cut: compact ? 5 : 6, cornerRadius: 3)
-                    .strokeBorder(color.opacity(filled ? (hovering ? 0.95 : 0.72) : (hovering ? 0.65 : 0.35)), lineWidth: 0.95)
+                shape.strokeBorder(color.opacity(filled ? (hovering ? 1.0 : 0.78) : (hovering ? 0.75 : 0.40)), lineWidth: 0.95)
             )
             .foregroundStyle(filled ? HudTheme.textPrimary : color)
-            .shadow(color: filled ? color.opacity(hovering ? 0.35 : 0.16) : .clear, radius: 5)
             .opacity(disabled ? 0.45 : 1.0)
             .contentShape(Rectangle())
         }
@@ -265,7 +247,7 @@ struct HudButton: View {
     }
 }
 
-// MARK: - Sci-Fi Styled Toggle Row
+// MARK: - Zero-Shadow Sci-Fi Hardware Toggle Row
 struct HudToggleRow: View {
     let title: String
     var subtitle: String? = nil
@@ -274,9 +256,7 @@ struct HudToggleRow: View {
 
     var body: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                isOn.toggle()
-            }
+            isOn.toggle()
         } label: {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 1.5) {
@@ -292,7 +272,6 @@ struct HudToggleRow: View {
                     }
                 }
                 Spacer(minLength: 8)
-                // Custom neon hardware switch
                 ZStack(alignment: isOn ? .trailing : .leading) {
                     Capsule()
                         .fill(isOn ? accent.opacity(0.28) : HudTheme.insetBg)
@@ -305,7 +284,6 @@ struct HudToggleRow: View {
                     Circle()
                         .fill(isOn ? accent : HudTheme.textMuted)
                         .frame(width: 12, height: 12)
-                        .shadow(color: isOn ? accent.opacity(0.8) : .clear, radius: 3)
                         .padding(.horizontal, 3)
                 }
             }

@@ -49,7 +49,7 @@ private struct PopoverRootView: View {
 
     var body: some View {
         ZStack {
-            SciFiBackgroundCanvas(accent: primaryAccent)
+            SciFiBackgroundCanvas(accent: primaryAccent).equatable()
 
             VStack(spacing: 0) {
                 headerBar
@@ -64,7 +64,6 @@ private struct PopoverRootView: View {
                     actionNoticeBanner(notice)
                         .padding(.horizontal, 14)
                         .padding(.bottom, 7)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 Group {
@@ -83,12 +82,9 @@ private struct PopoverRootView: View {
             }
         }
         .frame(width: 575, height: 690)
-        // Force SwiftUI environment colorScheme inside MenuBarExtra so ScrollView/TextField/Picker
-        // always render dark even when macOS system appearance is Light Mode
         .environment(\.colorScheme, .dark)
         .preferredColorScheme(.dark)
         .foregroundStyle(HudTheme.textPrimary)
-        .animation(.easeInOut(duration: 0.18), value: vm.actionNotice)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
             vm.setPopoverVisible(true)
@@ -133,7 +129,6 @@ private struct PopoverRootView: View {
             Image(systemName: icon)
                 .foregroundStyle(accent)
                 .font(.system(size: 12, weight: .bold))
-                .shadow(color: accent.opacity(0.6), radius: 3)
             Text(message)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(HudTheme.textPrimary)
@@ -178,7 +173,6 @@ private struct PopoverRootView: View {
                         .font(.system(size: 14.5, weight: .black, design: .monospaced))
                         .tracking(1.4)
                         .foregroundStyle(HudTheme.textPrimary)
-                        .shadow(color: primaryAccent.opacity(0.45), radius: 4)
 
                     Text("v2.0")
                         .font(.system(size: 8.5, weight: .bold, design: .monospaced))
@@ -246,7 +240,6 @@ private struct PopoverRootView: View {
                     Image(systemName: isQuantumViolet ? "sparkles" : "atom")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(primaryAccent)
-                        .shadow(color: primaryAccent.opacity(0.8), radius: 3)
                 }
             }
             .buttonStyle(.plain)
@@ -261,7 +254,6 @@ private struct PopoverRootView: View {
                     Circle()
                         .fill(activeColor)
                         .frame(width: 6.5, height: 6.5)
-                        .shadow(color: vm.imeSettings.isEnabled ? activeColor : .clear, radius: 3.5)
                     Text(vm.imeSettings.isEnabled ? "VI" : "EN")
                         .font(.system(size: 11, weight: .black, design: .monospaced))
                         .foregroundStyle(HudTheme.textPrimary)
@@ -279,7 +271,6 @@ private struct PopoverRootView: View {
                     ChamferedRect(cut: 6, cornerRadius: 3)
                         .strokeBorder(activeColor.opacity(vm.imeSettings.isEnabled ? 0.78 : 0.35), lineWidth: 0.95)
                 )
-                .shadow(color: vm.imeSettings.isEnabled ? activeColor.opacity(0.28) : .clear, radius: 5)
             }
             .buttonStyle(.plain)
             .help("Bấm hoặc nhấn \(vm.imeSettings.hotkey.displayName) để chuyển Việt / Anh")
@@ -311,11 +302,9 @@ private struct PopoverRootView: View {
         let alertDot = dotColor(for: tab)
         return Button {
             NSApp.activate(ignoringOtherApps: true)
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                vm.selectedTab = tab
-                if tab == .cleaner {
-                    vm.cleanerFocus = .all
-                }
+            vm.selectedTab = tab
+            if tab == .cleaner {
+                vm.cleanerFocus = .all
             }
         } label: {
             HStack(spacing: 4.5) {
@@ -330,7 +319,6 @@ private struct PopoverRootView: View {
                     Circle()
                         .fill(dot)
                         .frame(width: 5.5, height: 5.5)
-                        .shadow(color: dot, radius: 2.5)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -350,7 +338,6 @@ private struct PopoverRootView: View {
                             ChamferedRect(cut: 6, cornerRadius: 3)
                                 .strokeBorder(primaryAccent.opacity(0.75), lineWidth: 1)
                         )
-                        .shadow(color: primaryAccent.opacity(0.32), radius: 5)
                         .matchedGeometryEffect(id: "hudActiveTab", in: tabIndicatorNS)
                 } else if hoveredTab == tab {
                     ChamferedRect(cut: 6, cornerRadius: 3)
@@ -402,7 +389,6 @@ private struct PopoverRootView: View {
                 Circle()
                     .fill(HudTheme.emerald)
                     .frame(width: 5.5, height: 5.5)
-                    .shadow(color: HudTheme.emerald, radius: 2.5)
                 Text(vm.lastUpdated, style: .time)
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(HudTheme.textSecondary)

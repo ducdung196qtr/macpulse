@@ -506,7 +506,7 @@ public final class AppViewModel: ObservableObject {
 
     private func startAdaptiveScheduler() {
         schedulerTimer?.invalidate()
-        let interval: TimeInterval = isPopoverVisible ? 3.0 : 10.0
+        let interval: TimeInterval = isPopoverVisible ? 4.0 : 12.0
         schedulerTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }

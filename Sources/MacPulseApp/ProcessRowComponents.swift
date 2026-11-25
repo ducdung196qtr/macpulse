@@ -5,14 +5,13 @@ struct ProcessRowView: View {
     let group: ProcessGroupSummary
     @ObservedObject var vm: AppViewModel
     let highlightRAM: Bool
-    @State private var isHoveringInfo = false
 
     private var isPinnedInfo: Bool {
         vm.inspectedGuidanceGroup?.id == group.id
     }
 
     private var showGuidanceCard: Bool {
-        isHoveringInfo || isPinnedInfo
+        isPinnedInfo
     }
 
     private var safetyColor: Color {
@@ -84,12 +83,10 @@ struct ProcessRowView: View {
                 .frame(width: 68, alignment: .trailing)
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
-                        if isPinnedInfo {
-                            vm.inspectedGuidanceGroup = nil
-                        } else {
-                            vm.inspectedGuidanceGroup = group
-                        }
+                    if isPinnedInfo {
+                        vm.inspectedGuidanceGroup = nil
+                    } else {
+                        vm.inspectedGuidanceGroup = group
                     }
                 } label: {
                     Image(systemName: showGuidanceCard ? "info.circle.fill" : "info.circle")
@@ -99,11 +96,6 @@ struct ProcessRowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .onHover { hovering in
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                        isHoveringInfo = hovering
-                    }
-                }
                 .accessibilityIdentifier("info_\(group.id)")
                 .help("\(group.guidance.whatIsIt)\n• Trạng thái: \(group.guidance.currentActivityHint)\n• Tắt có sao không: \(group.guidance.impactIfClosed)")
 
@@ -112,7 +104,6 @@ struct ProcessRowView: View {
 
             if showGuidanceCard {
                 GuidanceDetailCard(guidance: group.guidance)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .hudCard(
@@ -129,7 +120,6 @@ struct ProcessRowView: View {
             Capsule()
                 .fill(color)
                 .frame(width: max(2, 34 * CGFloat(max(0, min(1, ratio)))))
-                .shadow(color: color.opacity(0.6), radius: 2)
         }
         .frame(width: 34, height: 2.8)
     }
