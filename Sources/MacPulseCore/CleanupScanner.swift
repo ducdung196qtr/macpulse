@@ -116,12 +116,15 @@ public final class CleanupScanner {
             ("cache-yarn-pnpm", "Cache Yarn / pnpm", "Gói tải tạm của Yarn / pnpm.", ["Library/Caches/Yarn", ".cache/yarn", "Library/pnpm/store"], false),
             ("cache-cocoapods", "Cache CocoaPods", "Cache repository và package của CocoaPods.", ["Library/Caches/CocoaPods"], false),
             ("cache-gradle", "Cache Gradle (~/.gradle/caches)", "Cache dependency của Gradle / Android Studio.", [".gradle/caches"], false),
+            ("cache-bun-cargo", "Cache Bun & Rust Cargo", "Gói tải tạm của Bun và Cargo; tự tải lại khi chạy install/build.", [".bun/install/cache", ".cargo/registry/cache"], true),
+            ("cache-go-build", "Cache Go Build", "Bộ đệm biên dịch tạm của Go.", ["Library/Caches/go-build"], false),
             ("cache-docker", "Cache Docker Desktop", "Bộ đệm tạm của Docker Desktop.", ["Library/Caches/com.docker.docker"], false)
         ]
 
         // 4. File rác hệ thống
         let systemSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
-            ("cache-quicklook", "Cache QuickLook Thumbnail", "Bộ đệm hình xem nhanh QuickLook của Finder.", ["Library/Caches/com.apple.QuickLook.thumbnailcache"], true)
+            ("cache-quicklook", "Cache QuickLook Thumbnail", "Bộ đệm hình xem nhanh QuickLook của Finder.", ["Library/Caches/com.apple.QuickLook.thumbnailcache"], true),
+            ("logs-diagnostic-reports", "Báo cáo Crash macOS (DiagnosticReports)", "Các file báo cáo lỗi ứng dụng cũ (.ips/.crash) không còn cần thiết.", ["Library/Logs/DiagnosticReports"], true)
         ]
 
         func scanGroup(

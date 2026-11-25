@@ -1859,6 +1859,29 @@ suite.test("v2.0: AutoOptimizer triggers replaydStorm even when total CPU > 65% 
     try expect(skipped == nil, "Disabled autoHealStuckReplayd should stay paused under high CPU")
 }
 
+suite.test("v2.0: CleanupScanner detects macOS DiagnosticReports crash logs and Bun/Cargo caches safely") {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("macpulse-diag-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let diagDir = root.appendingPathComponent("Library/Logs/DiagnosticReports")
+    let bunDir = root.appendingPathComponent(".bun/install/cache")
+    try FileManager.default.createDirectory(at: diagDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: bunDir, withIntermediateDirectories: true)
+
+    let dummy = Data(repeating: 0x42, count: 120 * 1024)
+    try dummy.write(to: diagDir.appendingPathComponent("Chrome-2026-11-25.ips"))
+    try dummy.write(to: bunDir.appendingPathComponent("pkg.tgz"))
+
+    let found = CleanupScanner(homeDirectory: root).scan()
+    let diagItem = found.first { $0.id == "logs-diagnostic-reports" }
+    let bunItem = found.first { $0.id == "cache-bun-cargo" }
+    try expect(diagItem != nil, "Should detect macOS DiagnosticReports crash logs")
+    try expectEqual(diagItem?.category, .logsAndTrash)
+    try expectEqual(diagItem?.tier, .safeAutoClean)
+    try expect(bunItem != nil, "Should detect Bun/Cargo cache")
+    try expectEqual(bunItem?.category, .developerBuild)
+}
+
 suite.summaryAndExit()
 
 

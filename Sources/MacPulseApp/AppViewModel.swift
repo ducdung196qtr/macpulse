@@ -16,8 +16,8 @@ public enum AppTab: String, CaseIterable, Identifiable {
 
 public enum CleanerFocusSection: String, CaseIterable, Identifiable, Sendable {
     case ssd = "Dọn SSD"
+    case ram = "Giải phóng RAM"
     case chrome = "Sửa Chrome"
-    case ram = "RAM"
     case autopilot = "Tự động"
 
     public var id: String { rawValue }
@@ -25,8 +25,8 @@ public enum CleanerFocusSection: String, CaseIterable, Identifiable, Sendable {
     public var icon: String {
         switch self {
         case .ssd: return "internaldrive.fill"
-        case .chrome: return "lifepreserver.fill"
         case .ram: return "memorychip.fill"
+        case .chrome: return "lifepreserver.fill"
         case .autopilot: return "bolt.shield.fill"
         }
     }
@@ -84,6 +84,8 @@ public final class AppViewModel: ObservableObject {
     private var lastCleanupScanAt: Date = .distantPast
     @Published public var isPopoverVisible: Bool = false
     @Published public var cleanerFocus: CleanerFocusSection = .ssd
+    @Published public var isBoostingRAM: Bool = false
+    @Published public var lastRAMBoostSummary: String? = nil
 
     // MARK: - App Preferences & System Integration
     @Published public var menuBarDisplayMode: MenuBarDisplayMode {
@@ -1185,7 +1187,7 @@ public final class AppViewModel: ObservableObject {
                 guard group.guidance.safetyLevel == .safeNow || group.guidance.safetyLevel == .cautionSaveFirst else {
                     return false
                 }
-                return group.isOrphanAutomation || group.totalRSSBytes >= 100_000_000 || group.totalCPUPercent >= 25.0
+                return group.isOrphanAutomation || group.totalRSSBytes >= 60_000_000 || group.totalCPUPercent >= 20.0
             }
             .sorted { lhs, rhs in
                 if lhs.isOrphanAutomation != rhs.isOrphanAutomation {
@@ -1193,12 +1195,112 @@ public final class AppViewModel: ObservableObject {
                 }
                 return lhs.totalRSSBytes > rhs.totalRSSBytes
             }
-            .prefix(8)
+            .prefix(15)
             .map { $0 }
     }
 
     public var estimatedReclaimableRAMBytes: UInt64 {
         ramReclaimableGroups.reduce(0) { $0 + $1.totalRSSBytes }
+    }
+
+    public var duplicateTabExtraCount: Int {
+        duplicateTabs.reduce(0) { $0 + max(0, $1.tabs.count - 1) }
+    }
+
+    /// 1-click work-safe Smart RAM Boost (zero `sudo purge` freezes, zero lost tabs/work):
+    /// 1. Politely closes genuinely idle non-protected GUI apps (Cmd+Q only, CPU < 2%)
+    /// 2. Stops orphan headless automation Chrome bots if running
+    /// 3. Closes strictly duplicate extra browser tabs (keeps 1st original copy of every URL)
+    /// 4. Renices noisy macOS background indexers (+10) and measures real reclaimed RAM delta
+    public func smartBoostRAM() {
+        guard !isBoostingRAM && !isCleaning && !isRescuingChrome else { return }
+        isBoostingRAM = true
+        lastRAMBoostSummary = nil
+
+        let beforeAvailableBytes = snapshot?.memory.availableBytes ?? 0
+        let idleResult = politelyCloseEligibleIdleApps()
+        let hasOrphanBots = (orphanAutomationGroup != nil)
+        let orphanBotRAM = orphanAutomationGroup?.totalRSSBytes ?? 0
+
+        Task.detached(priority: .userInitiated) { [telemetry] in
+            var stoppedBotPIDs = 0
+            if hasOrphanBots {
+                let botReport = CleanupExecutor.rescueAndResetBrowserAutomation()
+                stoppedBotPIDs = botReport.stoppedPIDs.count
+            }
+
+            // Close strictly duplicate extra browser tabs (keep 1st original of each URL)
+            let tabScan = BrowserTabInspector.fetchRunningBrowserTabs()
+            let dupGroups = BrowserTabInspector.findDuplicates(in: tabScan.tabs)
+            let extraDupTabs = dupGroups.flatMap { Array($0.tabs.dropFirst()) }
+            var closedDupCount = 0
+            if !extraDupTabs.isEmpty {
+                let ordered = BrowserTabInspector.sortForSafeBatchClosing(extraDupTabs)
+                for tab in ordered {
+                    if BrowserTabInspector.closeTab(tab) {
+                        closedDupCount += 1
+                    }
+                }
+            }
+
+            // Politely renice noisy background indexers
+            let throttleRes = AutoOptimizerEngine.throttleNoisyBackgroundHelpers()
+
+            // Wait briefly for macOS VM to reclaim freed pages
+            usleep(850_000)
+
+            let afterMem = (try? telemetry.captureSnapshot())?.memory
+            let refreshedTabs = closedDupCount > 0 ? BrowserTabInspector.fetchRunningBrowserTabs() : tabScan
+            let remainingDups = BrowserTabInspector.findDuplicates(in: refreshedTabs.tabs)
+
+            let finalStoppedBots = stoppedBotPIDs
+            let finalClosedDups = closedDupCount
+            let finalThrottled = throttleRes.count
+
+            await MainActor.run {
+                self.isBoostingRAM = false
+                self.openBrowserTabs = refreshedTabs.tabs
+                self.duplicateTabs = remainingDups
+                self.tabWarnings = refreshedTabs.warnings
+
+                if !idleResult.names.isEmpty {
+                    self.autoOptimizeLifetimeReclaimedRAMBytes += idleResult.reclaimedRAMBytes
+                    self.autoOptimizeTotalIdleAppsClosed += idleResult.names.count
+                    self.persistAutoOptimizeState()
+                }
+
+                var parts: [String] = []
+                if !idleResult.names.isEmpty {
+                    parts.append("đóng êm \(idleResult.names.count) app rảnh (~\(Formatters.bytes(idleResult.reclaimedRAMBytes)))")
+                }
+                if finalStoppedBots > 0 {
+                    parts.append("dừng \(finalStoppedBots) bot ngầm (~\(Formatters.bytes(orphanBotRAM)))")
+                }
+                if finalClosedDups > 0 {
+                    parts.append("xoá \(finalClosedDups) tab mở trùng")
+                }
+                if finalThrottled > 0 {
+                    parts.append("hạ ưu tiên \(finalThrottled) tiến trình nền")
+                }
+
+                let afterAvail = afterMem?.availableBytes ?? beforeAvailableBytes
+                let realDeltaBytes: UInt64 = afterAvail > beforeAvailableBytes ? (afterAvail - beforeAvailableBytes) : 0
+                let deltaNote = realDeltaBytes >= 50 * 1_048_576 ? " • RAM trống tăng +\(Formatters.bytes(realDeltaBytes))" : ""
+
+                if parts.isEmpty {
+                    let msg = "Không có app rảnh, bot ngầm hay tab mở trùng cần dọn — toàn bộ app đang mở đều đang được bảo vệ công việc. Anh có thể đóng chọn lọc từng app bên dưới."
+                    self.lastRAMBoostSummary = msg
+                    self.showNotice(msg, kind: .info)
+                } else {
+                    let msg = "Đã giải phóng RAM: \(parts.joined(separator: ", "))\(deltaNote)."
+                    self.lastRAMBoostSummary = msg
+                    self.showNotice(msg, kind: .success)
+                }
+
+                self.refreshTrackedGUIApps()
+                self.refreshNow(includeProcesses: true)
+            }
+        }
     }
 
     public var stuckChromeRenderers: [RawProcessInfo] {

@@ -92,12 +92,24 @@ struct ProcessRowView: View {
                 }
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(Formatters.bytes(group.totalRSSBytes))
-                        .font(.system(size: 10.5, weight: highlightRAM ? .bold : .medium, design: .monospaced))
-                        .foregroundStyle(highlightRAM ? HudTheme.cyan : HudTheme.textSecondary)
+                    if highlightRAM {
+                        let pct = Double(group.totalRSSBytes) / max(1.0, Double(vm.hardwareSpecs.totalRAMBytes)) * 100.0
+                        HStack(spacing: 3.5) {
+                            Text(Formatters.bytes(group.totalRSSBytes))
+                                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HudTheme.cyan)
+                            Text(String(format: "%.0f%%", pct))
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HudTheme.textMuted)
+                        }
+                    } else {
+                        Text(Formatters.bytes(group.totalRSSBytes))
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(HudTheme.textSecondary)
+                    }
                     microLoadBar(ratio: ramIntensity, color: highlightRAM ? HudTheme.cyan : HudTheme.cobalt)
                 }
-                .frame(width: 64, alignment: .trailing)
+                .frame(width: highlightRAM ? 86 : 64, alignment: .trailing)
 
                 actionTrailingControl
                     .frame(minWidth: 52, alignment: .trailing)
