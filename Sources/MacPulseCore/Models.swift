@@ -233,6 +233,8 @@ public enum ProcessActionKind: String, Sendable, Equatable {
     case none
     case killOrphanPuppeteer
     case killStuckChromeRenderers
+    case resetChromeGPU
+    case restartReplayd
     case quitAppGracefully
     case terminateUserProcess
     case inspectBrowserTabs

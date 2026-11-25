@@ -5,7 +5,8 @@ public enum HealthAnalyzer {
         snapshot: SystemSnapshot,
         processGroups: [ProcessGroupSummary],
         stuckChromeRendererCount: Int = 0,
-        stuckChromeRendererCPU: Double = 0
+        stuckChromeRendererCPU: Double = 0,
+        chromeGPUCPU: Double = 0
     ) -> HealthReport {
         var score = 100
         var findings: [DiagnosticFinding] = []
@@ -26,43 +27,23 @@ public enum HealthAnalyzer {
         }
 
         if let replayd = processGroups.first(where: { $0.id == "sys:replayd" }), replayd.totalCPUPercent >= 25.0 {
-            let isSevere = replayd.totalCPUPercent >= 70.0
-            score -= isSevere ? 25 : 12
-            let culprit = processGroups.first {
-                $0.id.contains("ChatGPT") || $0.id.contains("Codex") || $0.isOrphanAutomation || ($0.id == "app:Google Chrome" && $0.totalCPUPercent >= 15)
-            }
-            let callers = processGroups
-                .filter { $0.id.contains("ChatGPT") || $0.id.contains("Codex") || $0.isOrphanAutomation || ($0.id == "app:Google Chrome" && $0.totalCPUPercent >= 15) }
-                .map { "\($0.displayName) (\(Int($0.totalCPUPercent))% CPU)" }
-            let callerHint = callers.isEmpty ? "Kiểm tra app ghi/đọc màn hình hoặc trình duyệt." : "Tác nhân khả nghi: \(callers.joined(separator: ", "))."
-
-            let recAction: ProcessActionKind
-            let targetID: String?
-            let label: String?
-            if let c = culprit, c.isOrphanAutomation {
-                recAction = .killOrphanPuppeteer
-                targetID = c.id
-                label = "Dọn Puppeteer"
-            } else if let c = culprit, c.actionKind == .quitAppGracefully {
-                recAction = .quitAppGracefully
-                targetID = c.id
-                label = "Đóng \(c.displayName)"
-            } else {
-                recAction = .none
-                targetID = nil
-                label = nil
-            }
+            let isSevere = replayd.totalCPUPercent >= 60.0
+            score -= isSevere ? 30 : 15
+            let chromeCPU = processGroups.first(where: { $0.id == "app:Google Chrome" })?.totalCPUPercent ?? 0
+            let chromeNote = chromeCPU >= 15.0
+                ? " Đang kéo Google Chrome lên \(Int(chromeCPU))% CPU & gây bão XPC (_Xmach_notify_port_destroyed)."
+                : " Lỗi vòng lặp XPC của ScreenCapture đang đốt CPU cho Chrome, ChatGPT & WindowServer."
 
             findings.append(DiagnosticFinding(
                 id: "replayd-storm",
                 severity: isSevere ? .critical : .warning,
-                title: "Bão XPC replayd (\(Int(replayd.totalCPUPercent))% CPU)",
-                detail: "Daemon ScreenCapture của macOS đang nhận kết nối lặp liên tục. \(callerHint)",
-                recommendedAction: recAction,
-                targetID: targetID,
-                safetyLevel: culprit?.guidance.safetyLevel ?? .systemProtected,
-                impactNote: "Không tắt trực tiếp replayd (hệ thống tự bật lại). Hãy đóng ứng dụng đang gọi chụp màn hình để replayd tự hạ tải.",
-                actionLabel: label
+                title: "replayd bị treo vòng lặp XPC (\(Int(replayd.totalCPUPercent))% CPU)",
+                detail: "/usr/libexec/replayd đang kẹt vòng lặp ngốn CPU liên tục.\(chromeNote)",
+                recommendedAction: .restartReplayd,
+                targetID: "sys:replayd",
+                safetyLevel: .safeNow,
+                impactNote: "An toàn 100%: Restart sạch replayd để launchd khởi chạy lại ở 0% CPU — giải cứu tức thì Chrome & toàn máy mà KHÔNG đóng tab hay mất dữ liệu.",
+                actionLabel: "Reset replayd ngay"
             ))
         }
 
@@ -90,18 +71,32 @@ public enum HealthAnalyzer {
             ))
         }
 
-        if stuckChromeRendererCount > 0 && stuckChromeRendererCPU >= 25.0 {
-            score -= 10
+        if stuckChromeRendererCount > 0 && (stuckChromeRendererCPU >= 15.0 || (stuckChromeRendererCPU >= 8.0 && chromeGPUCPU >= 8.0)) {
+            let gpuNote = chromeGPUCPU >= 8.0 ? " + GPU Chrome \(Int(chromeGPUCPU))% CPU" : ""
+            score -= stuckChromeRendererCPU >= 50.0 ? 15 : 10
             findings.append(DiagnosticFinding(
                 id: "stuck-chrome-renderers",
-                severity: stuckChromeRendererCPU >= 80 ? .critical : .warning,
-                title: "\(stuckChromeRendererCount) tab Chrome đang kẹt / ăn \(Int(stuckChromeRendererCPU))% CPU",
-                detail: "Tab localhost hoặc vòng lặp JS đang treo tiến trình render, dễ làm đơ toàn bộ trình duyệt.",
+                severity: stuckChromeRendererCPU >= 60 ? .critical : .warning,
+                title: "\(stuckChromeRendererCount) tab Chrome lặp JS/DOM (\(Int(stuckChromeRendererCPU))% CPU\(gpuNote))",
+                detail: "Tab web hoặc vòng lặp JS/DOM đang ngốn CPU & GPU liên tục, dễ làm đơ và phình RAM Chrome.",
                 recommendedAction: .killStuckChromeRenderers,
                 targetID: "app:Google Chrome",
                 safetyLevel: .safeNow,
                 impactNote: "Chỉ dừng riêng tab bị treo (hiện trang Aw Snap để F5), giữ nguyên 100% tab khác & Extension.",
                 actionLabel: "Gỡ kẹt tab"
+            ))
+        } else if chromeGPUCPU >= 18.0 {
+            score -= 8
+            findings.append(DiagnosticFinding(
+                id: "chrome-gpu-loop",
+                severity: .warning,
+                title: "GPU Chrome đang quá tải (\(Int(chromeGPUCPU))% CPU)",
+                detail: "Tiến trình GPU của Chrome đang dựng hình/compositor liên tục gây nóng máy và giật cuộn trang.",
+                recommendedAction: .resetChromeGPU,
+                targetID: "app:Google Chrome",
+                safetyLevel: .safeNow,
+                impactNote: "An toàn 100%: Reset riêng tiến trình GPU Chrome (tự phục hồi trong <0.5s), KHÔNG đóng tab hay mất form.",
+                actionLabel: "Reset GPU Chrome"
             ))
         }
 

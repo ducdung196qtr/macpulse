@@ -11,7 +11,7 @@ struct CleanerView: View {
     }
 
     private var hasActiveBrowserAlert: Bool {
-        vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty
+        vm.isReplaydStuck || vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty || vm.chromeGPUTotalCPU >= 8.0
     }
 
     private var isRescueExpanded: Bool {
@@ -345,8 +345,14 @@ struct CleanerView: View {
             .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
 
-            // 6 Granular Rule Switches
+            // 7 Granular Rule Switches
             VStack(spacing: 7) {
+                HudToggleRow(
+                    title: "Tự chữa lỗi treo macOS replayd (≥ 75% CPU bóp Chrome)",
+                    subtitle: "Phát hiện bão XPC (_Xmach_notify_port_destroyed) và restart replayd ngay kể cả khi CPU tổng đang cao — 0 mất tab.",
+                    isOn: $vm.autoOptimizeConfig.autoHealStuckReplayd,
+                    accent: HudTheme.crimson
+                )
                 HudToggleRow(
                     title: "Tự đóng êm ứng dụng lâu không dùng (Cmd+Q an toàn)",
                     subtitle: "Chỉ đóng khi không dùng ≥ \(vm.autoOptimizeConfig.idleAppTimeoutMinutes)p & CPU < 2%. Tự bảo vệ công việc & không ép tắt file chưa lưu.",
@@ -579,6 +585,7 @@ struct CleanerView: View {
     private func autopilotHistoryRow(_ rec: AutoOptimizeRunRecord) -> some View {
         let badgeColor: Color
         switch rec.trigger {
+        case .replaydStorm: badgeColor = HudTheme.crimson
         case .lowDisk, .ramPressure: badgeColor = HudTheme.amber
         case .manual: badgeColor = HudTheme.cyan
         case .scheduled: badgeColor = HudTheme.emerald
@@ -597,7 +604,7 @@ struct CleanerView: View {
 
             Text(rec.summary)
                 .font(.system(size: 9.5))
-                .foregroundStyle((rec.freedBytes > 0 || !rec.closedIdleApps.isEmpty || rec.throttledBackgroundCount > 0) ? HudTheme.textPrimary : HudTheme.textSecondary)
+                .foregroundStyle((rec.freedBytes > 0 || !rec.closedIdleApps.isEmpty || rec.throttledBackgroundCount > 0 || rec.restartedReplayd) ? HudTheme.textPrimary : HudTheme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
@@ -694,8 +701,12 @@ struct CleanerView: View {
         let stuckCount = vm.stuckChromeRenderers.count
         let totalStuckCPU = vm.stuckChromeRenderers.reduce(0.0) { $0 + $1.cpuPercent }
         let totalChromeProcs = vm.processGroups.first(where: { $0.id == "app:Google Chrome" })?.processCount ?? 0
+        let chromeGPUCPU = vm.chromeGPUTotalCPU
+        let chromeGPUCount = vm.chromeGPUProcesses.count
+        let replayd = vm.replaydProcessGroup
+        let isReplaydStuck = vm.isReplaydStuck
         let autoGroup = vm.orphanAutomationGroup
-        let cardAccent: Color = hasActiveBrowserAlert ? HudTheme.amber : HudTheme.cyan
+        let cardAccent: Color = isReplaydStuck ? HudTheme.crimson : (hasActiveBrowserAlert ? HudTheme.amber : HudTheme.cyan)
 
         return VStack(alignment: .leading, spacing: 10) {
             Button {
@@ -719,7 +730,14 @@ struct CleanerView: View {
                             Text("CHROME & AUTOMATION RESCUE")
                                 .font(.system(size: 11, weight: .black, design: .monospaced))
                                 .foregroundStyle(HudTheme.textPrimary)
-                            if let auto = autoGroup {
+                            if isReplaydStuck, let r = replayd {
+                                Text("REPLAYD \(Int(r.totalCPUPercent.rounded()))% CPU")
+                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                                    .padding(.horizontal, 5.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(HudTheme.crimson.opacity(0.24), in: Capsule())
+                                    .foregroundStyle(HudTheme.crimson)
+                            } else if let auto = autoGroup {
                                 Text("\(auto.processCount) BOT NGẦM")
                                     .font(.system(size: 8.5, weight: .black, design: .monospaced))
                                     .padding(.horizontal, 5.5)
@@ -728,6 +746,13 @@ struct CleanerView: View {
                                     .foregroundStyle(HudTheme.amber)
                             } else if stuckCount > 0 {
                                 Text("\(stuckCount) TAB ĐƠ")
+                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                                    .padding(.horizontal, 5.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(HudTheme.amber.opacity(0.22), in: Capsule())
+                                    .foregroundStyle(HudTheme.amber)
+                            } else if chromeGPUCPU >= 8.0 {
+                                Text("GPU \(Int(chromeGPUCPU.rounded()))% CPU")
                                     .font(.system(size: 8.5, weight: .black, design: .monospaced))
                                     .padding(.horizontal, 5.5)
                                     .padding(.vertical, 1.5)
@@ -742,9 +767,11 @@ struct CleanerView: View {
                                     .foregroundStyle(HudTheme.emerald)
                             }
                         }
-                        Text(hasActiveBrowserAlert
-                             ? "Phát hiện tác vụ trình duyệt hoặc cụm headless ngầm ngốn tải — bấm xử lý tức thì."
-                             : "Gỡ đơ tab localhost, khởi động lại sạch Chrome, hoặc reset cụm agent-browser.")
+                        Text(isReplaydStuck
+                             ? "Bão XPC macOS replayd đang bóp nghẹt Chrome & OpenMausBot — bấm Reset replayd ngay (0 mất tab)."
+                             : (hasActiveBrowserAlert
+                                ? "Phát hiện tab JS/DOM, GPU Chrome hoặc cụm headless ngầm ngốn tải — bấm xử lý tức thì."
+                                : "Chữa bão replayd XPC, gỡ đơ tab JS/DOM & GPU Chrome, hoặc reset cụm agent-browser."))
                             .font(.system(size: 10))
                             .foregroundStyle(HudTheme.textSecondary)
                             .lineLimit(1)
@@ -781,30 +808,83 @@ struct CleanerView: View {
                 .background(HudTheme.emerald.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.emerald.opacity(0.32), lineWidth: 0.7))
 
-                // Action 1: Stuck Renderers
+                // Action 0: macOS replayd XPC Storm Fix (Choking Chrome, OpenMausBot & WindowServer)
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        Image(systemName: stuckCount > 0 ? "exclamationmark.triangle.fill" : "bolt.horizontal.fill")
-                            .foregroundStyle(stuckCount > 0 ? HudTheme.amber : HudTheme.cyan)
-                        Text("Gỡ đơ tab/task Chrome thường (Localhost / Dev Server)")
+                        Image(systemName: isReplaydStuck ? "flame.fill" : "waveform.path.ecg")
+                            .foregroundStyle(isReplaydStuck ? HudTheme.crimson : HudTheme.cyan)
+                        Text("Chữa bão XPC macOS replayd (Bóp nghẹt Chrome & OpenMausBot)")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(HudTheme.textPrimary)
                         Spacer()
-                        if stuckCount > 0 {
-                            Text("\(stuckCount) TAB • \(String(format: "%.0f%%", totalStuckCPU)) CPU")
+                        if let r = replayd {
+                            let pidText = r.pids.first.map { "PID \($0) • " } ?? ""
+                            let niceTag = vm.isReplaydThrottled ? " • NICE+20" : ""
+                            Text("\(pidText)\(String(format: "%.0f%%", r.totalCPUPercent)) CPU\(niceTag)")
                                 .font(.system(size: 9.5, weight: .black, design: .monospaced))
-                                .foregroundStyle(HudTheme.amber)
+                                .foregroundStyle(isReplaydStuck ? HudTheme.crimson : HudTheme.emerald)
+                        } else {
+                            Text("0% CPU • ỔN ĐỊNH")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HudTheme.emerald)
                         }
                     }
 
-                    Text("Chỉ dừng tiến trình render tab đang treo trên Chrome thường (hiện Aw Snap để F5). Giữ nguyên toàn bộ cửa sổ khác, Extension và bot headless.")
+                    Text(isReplaydStuck
+                        ? (vm.isReplaydThrottled
+                            ? "MacPulse đã hạ ưu tiên replayd xuống nice +20 để giữ thao tác mượt, nhưng các app khách (Chrome / OpenMausBot headless / ChatGPT / Codex) vẫn kẹt vòng lặp XPC RPDaemonProxy. Khởi động lại sạch Chrome + Reset Automation (hoặc mở lại ChatGPT/Codex) để cắt hẳn bão XPC."
+                            : "/usr/libexec/replayd đang kẹt vòng lặp XPC (_Xmach_notify_port_destroyed), đốt 20–27% CPU trên Chrome chính + 15–19% mỗi Chrome headless. Bấm Reset để launchctl kickstart sạch (và tự hạ nice +20 nếu app khách vẫn spam) — không đóng 1 tab nào!")
+                        : "Khi tiến trình macOS /usr/libexec/replayd bị treo vòng lặp XPC, nó bóp nghẹt Chrome, OpenMausBot & WindowServer. Bấm reset để launchd khởi động lại sạch ở 0% CPU (giữ nguyên mọi tab).")
                         .font(.caption2)
                         .foregroundStyle(HudTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    HStack(spacing: 8) {
+                    HudButton(
+                        title: isReplaydStuck ? "Reset replayd ngay (0 mất tab)" : "Kiểm tra & Reset replayd",
+                        icon: "bolt.shield.fill",
+                        color: isReplaydStuck ? HudTheme.crimson : HudTheme.cyan,
+                        filled: isReplaydStuck,
+                        compact: true,
+                        disabled: vm.isRescuingChrome
+                    ) {
+                        vm.restartStuckReplayd(forceAlways: true)
+                    }
+                }
+                .padding(9)
+                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(isReplaydStuck ? HudTheme.crimson.opacity(0.65) : HudTheme.cyan.opacity(0.20), lineWidth: isReplaydStuck ? 1.1 : 0.8))
+
+                // Action 1: Stuck Renderers (JS/DOM loops) & Chrome GPU Soft Reset
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: (stuckCount > 0 || chromeGPUCPU >= 8.0) ? "exclamationmark.triangle.fill" : "bolt.horizontal.fill")
+                            .foregroundStyle((stuckCount > 0 || chromeGPUCPU >= 8.0) ? HudTheme.amber : HudTheme.cyan)
+                        Text("Gỡ đơ tab JS/DOM & GPU Chrome thường (Localhost / Theme)")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(HudTheme.textPrimary)
+                        Spacer()
+                        HStack(spacing: 5) {
+                            if stuckCount > 0 {
+                                Text("\(stuckCount) TAB • \(String(format: "%.0f%%", totalStuckCPU)) CPU")
+                                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                                    .foregroundStyle(HudTheme.amber)
+                            }
+                            if chromeGPUCPU >= 5.0 {
+                                Text("GPU \(String(format: "%.0f%%", chromeGPUCPU))")
+                                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                                    .foregroundStyle(chromeGPUCPU >= 8.0 ? HudTheme.amber : HudTheme.cyan)
+                            }
+                        }
+                    }
+
+                    Text("Tự bắt tab kẹt vòng lặp JS/DOM (≥10% CPU hoặc ≥8% CPU & ≥250 MB RAM) và cho phép Reset GPU Chrome (tự hồi sinh trong <0.5s, 0 mất tab, giữ nguyên Extension và bot headless).")
+                        .font(.caption2)
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 7) {
                         HudButton(
-                            title: stuckCount > 0 ? "Gỡ kẹt ngay (\(stuckCount) tab)" : "Kiểm tra & Gỡ tab đơ",
+                            title: stuckCount > 0 ? "Gỡ kẹt ngay (\(stuckCount) tab)" : "Gỡ tab đơ JS/DOM",
                             icon: "bolt.fill",
                             color: stuckCount > 0 ? HudTheme.amber : HudTheme.cyan,
                             filled: true,
@@ -813,8 +893,20 @@ struct CleanerView: View {
                             vm.killStuckChromeRenderers(forceAll: false)
                         }
 
+                        if chromeGPUCount > 0 {
+                            HudButton(
+                                title: "Reset GPU Chrome",
+                                icon: "cpu",
+                                color: chromeGPUCPU >= 8.0 ? HudTheme.amber : HudTheme.cyan,
+                                filled: chromeGPUCPU >= 8.0,
+                                compact: true
+                            ) {
+                                vm.resetChromeGPUProcess()
+                            }
+                        }
+
                         if totalChromeProcs > 0 {
-                            HudButton(title: "Gỡ tất cả renderer", color: HudTheme.textSecondary, filled: false, compact: true) {
+                            HudButton(title: "Gỡ mọi renderer", color: HudTheme.textSecondary, filled: false, compact: true) {
                                 vm.killStuckChromeRenderers(forceAll: true)
                             }
                         }
@@ -822,19 +914,19 @@ struct CleanerView: View {
                 }
                 .padding(9)
                 .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(stuckCount > 0 ? HudTheme.amber.opacity(0.48) : HudTheme.cyan.opacity(0.20), lineWidth: 0.8))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder((stuckCount > 0 || chromeGPUCPU >= 8.0) ? HudTheme.amber.opacity(0.48) : HudTheme.cyan.opacity(0.20), lineWidth: 0.8))
 
                 // Action 2: Full Clean Restart
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.clockwise.circle.fill")
                             .foregroundStyle(HudTheme.cobalt)
-                        Text("Khởi động lại sạch Chrome (Đóng êm 2.4s • Gỡ lock • Dọn cache)")
+                        Text("Khởi động lại sạch Chrome (Đóng êm 2.4s • Gỡ lock • Chữa replayd)")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(HudTheme.textPrimary)
                     }
 
-                    Text("Đóng nhẹ nhàng để lưu trọn phiên tab, gỡ sạch SingletonLock & DevToolsActivePort, dọn OS cache tạm và mở lại Chrome mượt mà.")
+                    Text("Đóng nhẹ nhàng để lưu trọn phiên tab, tự chữa replayd nếu đang treo, gỡ sạch SingletonLock & DevToolsActivePort, dọn OS cache tạm và mở lại Chrome mượt mà.")
                         .font(.caption2)
                         .foregroundStyle(HudTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

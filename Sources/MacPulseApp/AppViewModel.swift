@@ -732,16 +732,23 @@ public final class AppViewModel: ObservableObject {
                 scannedProcs = true
             }
 
-            let stuckRenderers = scannedRaw.filter { ProcessScanner.isNormalChromeRendererProcess($0) && $0.cpuPercent >= 12.0 }
+            let stuckRenderers = scannedRaw.filter {
+                ProcessScanner.isNormalChromeRendererProcess($0)
+                && ($0.cpuPercent >= 10.0 || ($0.cpuPercent >= 8.0 && $0.rssBytes >= 250 * 1_048_576))
+            }
             let stuckCount = stuckRenderers.count
             let stuckCPU = stuckRenderers.reduce(0.0) { $0 + $1.cpuPercent }
+            let chromeGPUCPU = scannedRaw
+                .filter { ProcessScanner.isNormalChromeGPUProcess($0) }
+                .reduce(0.0) { $0 + $1.cpuPercent }
 
             let report = snap.map {
                 HealthAnalyzer.analyze(
                     snapshot: $0,
                     processGroups: groups,
                     stuckChromeRendererCount: stuckCount,
-                    stuckChromeRendererCPU: stuckCPU
+                    stuckChromeRendererCPU: stuckCPU,
+                    chromeGPUCPU: chromeGPUCPU
                 )
             }
             let didScanProcs = scannedProcs
@@ -978,12 +985,15 @@ public final class AppViewModel: ObservableObject {
         let availableGB = Double(snap.disk.availableBytes) / 1_073_741_824.0
         let cpuBusy = snap.cpu.totalBusyPercent
         let compressedGB = snap.memory.compressedGB
+        let replaydCPU = replaydProcessGroup?.totalCPUPercent ?? 0.0
         guard let trigger = AutoOptimizerEngine.evaluateTrigger(
             config: autoOptimizeConfig,
             lastRunAt: autoOptimizeLastRunAt,
             availableDiskGB: availableGB,
             cpuBusyPercent: cpuBusy,
-            compressedRAMGB: compressedGB
+            compressedRAMGB: compressedGB,
+            replaydCPUPercent: replaydCPU,
+            replaydAlreadyThrottled: isReplaydThrottled
         ) else { return }
         executeAutoOptimize(trigger: trigger, priority: .background, announceIfZero: false)
     }
@@ -1010,6 +1020,7 @@ public final class AppViewModel: ObservableObject {
             let didOptimizeAnything = record.freedBytes > 0
                 || !record.closedIdleApps.isEmpty
                 || record.throttledBackgroundCount > 0
+                || record.restartedReplayd
             let shouldRescan = record.freedBytes > 0 || trigger == .manual
             let rescanned: [CleanupCandidate]? = shouldRescan ? cleanupScanner.scan() : nil
 
@@ -1197,11 +1208,35 @@ public final class AppViewModel: ObservableObject {
     }
 
     public var stuckChromeRenderers: [RawProcessInfo] {
-        rawProcesses.filter { ProcessScanner.isNormalChromeRendererProcess($0) && $0.cpuPercent >= 12.0 }
+        rawProcesses.filter {
+            ProcessScanner.isNormalChromeRendererProcess($0) &&
+            ($0.cpuPercent >= 10.0 || ($0.cpuPercent >= 8.0 && $0.rssBytes >= 250 * 1_048_576))
+        }
     }
 
     public var totalChromeRenderers: [RawProcessInfo] {
         rawProcesses.filter { ProcessScanner.isNormalChromeRendererProcess($0) }
+    }
+
+    public var chromeGPUProcesses: [RawProcessInfo] {
+        rawProcesses.filter { ProcessScanner.isNormalChromeGPUProcess($0) }
+    }
+
+    public var chromeGPUTotalCPU: Double {
+        chromeGPUProcesses.reduce(0.0) { $0 + $1.cpuPercent }
+    }
+
+    public var replaydProcessGroup: ProcessGroupSummary? {
+        processGroups.first(where: { $0.id == "sys:replayd" })
+    }
+
+    public var isReplaydStuck: Bool {
+        (replaydProcessGroup?.totalCPUPercent ?? 0) >= 25.0
+    }
+
+    public var isReplaydThrottled: Bool {
+        guard let pids = replaydProcessGroup?.pids, !pids.isEmpty else { return false }
+        return CleanupExecutor.isReplaydThrottled(pids: pids)
     }
 
     public var orphanAutomationGroup: ProcessGroupSummary? {
@@ -1241,10 +1276,10 @@ public final class AppViewModel: ObservableObject {
     public func killStuckChromeRenderers(forceAll: Bool = false) {
         guard !isRescuingChrome else { return }
         Task.detached(priority: .userInitiated) {
-            let (killed, cpuFreed) = CleanupExecutor.killStuckChromeRenderers(minCPUPercent: 12.0, forceAllRenderers: forceAll)
+            let (killed, cpuFreed) = CleanupExecutor.killStuckChromeRenderers(minCPUPercent: 10.0, forceAllRenderers: forceAll)
             await MainActor.run {
                 if killed.isEmpty {
-                    self.showNotice("Không phát hiện tab/task Chrome thường nào đang bị kẹt hoặc ngốn CPU.", kind: .info)
+                    self.showNotice("Không phát hiện tab/task Chrome thường nào đang bị kẹt vòng lặp JS/DOM hoặc ngốn CPU.", kind: .info)
                 } else {
                     let cpuStr = String(format: "%.1f%%", cpuFreed)
                     let msg = "Đã gỡ kẹt \(killed.count) tab/task Chrome treo (thu hồi \(cpuStr) CPU). Trình duyệt đã mượt trở lại!"
@@ -1252,6 +1287,56 @@ public final class AppViewModel: ObservableObject {
                     self.showNotice(msg, kind: .success)
                 }
                 self.refreshNow(includeProcesses: true)
+            }
+        }
+    }
+
+    public func restartStuckReplayd(forceAlways: Bool = true) {
+        guard !isRescuingChrome else { return }
+        Task.detached(priority: .userInitiated) {
+            let report = CleanupExecutor.restartStuckReplayd(minCPUPercent: 20.0, forceAlways: forceAlways)
+            await MainActor.run {
+                if report.didRestart {
+                    let prevStr = String(format: "%.0f%%", report.previousCPUPercent)
+                    if report.stillStormingFromClients {
+                        let niceNote = report.throttledNice ? " & hạ ưu tiên nice +20" : ""
+                        let clientsNote = report.stormingClients.isEmpty
+                            ? "Chrome / app dùng ScreenCaptureKit"
+                            : report.stormingClients.joined(separator: ", ")
+                        let msg = "Đã reset\(niceNote) replayd (\(prevStr) CPU), nhưng \(clientsNote) vẫn kẹt vòng lặp XPC RPDaemonProxy. Hãy bấm 'Khởi động lại sạch Chrome' + 'Reset Automation' (hoặc restart app trên) để cắt hẳn bão XPC."
+                        self.cleanupOutcomeMessage = msg
+                        self.showNotice(msg, kind: .warning)
+                    } else {
+                        let msg = "Đã reset sạch macOS replayd (vừa ngốn \(prevStr) CPU → 0%)! Bão XPC bóp nghẹt Chrome đã chấm dứt — giữ nguyên toàn bộ tab."
+                        self.cleanupOutcomeMessage = msg
+                        self.showNotice(msg, kind: .success)
+                    }
+                    self.refreshNow(includeProcesses: true)
+                    self.refreshAfterDelay()
+                } else if let err = report.error {
+                    self.showNotice(err, kind: .warning)
+                } else {
+                    self.showNotice("macOS replayd đang hoạt động bình thường (0% CPU), không cần khởi động lại.", kind: .info)
+                }
+            }
+        }
+    }
+
+    public func resetChromeGPUProcess() {
+        guard !isRescuingChrome else { return }
+        Task.detached(priority: .userInitiated) {
+            let (restarted, cpuFreed) = CleanupExecutor.resetChromeGPUProcess()
+            await MainActor.run {
+                if restarted.isEmpty {
+                    self.showNotice("Không tìm thấy tiến trình GPU của Google Chrome thường đang chạy.", kind: .info)
+                } else {
+                    let cpuStr = String(format: "%.1f%%", cpuFreed)
+                    let msg = "Đã reset tiến trình GPU Chrome (vừa ngốn \(cpuStr) CPU). Chrome tự khôi phục GPU trong <0.5s — 0 tab bị đóng!"
+                    self.cleanupOutcomeMessage = msg
+                    self.showNotice(msg, kind: .success)
+                    self.refreshNow(includeProcesses: true)
+                    self.refreshAfterDelay()
+                }
             }
         }
     }
@@ -1272,8 +1357,9 @@ public final class AppViewModel: ObservableObject {
                 let freedText = Formatters.bytes(report.freedBytes)
                 let stoppedCount = report.stoppedChromePIDs.count
                 let lockCount = report.removedLockFiles.count
+                let replaydNote = report.restartedReplayd ? " Đã reset replayd XPC." : ""
                 let relaunchNote = report.relaunchedChrome ? " Đã mở lại Chrome." : ""
-                let msg = "Đã sửa & dọn sạch Chrome: tắt \(stoppedCount) tiến trình, gỡ \(lockCount) lock, xoá \(freedText) cache.\(relaunchNote)"
+                let msg = "Đã sửa & dọn sạch Chrome: tắt \(stoppedCount) tiến trình, gỡ \(lockCount) lock, xoá \(freedText) cache.\(replaydNote)\(relaunchNote)"
                 let finalMsg = report.errors.isEmpty
                     ? msg
                     : "\(msg) (Cảnh báo: \(report.errors.joined(separator: "; ")))"
@@ -1313,6 +1399,11 @@ public final class AppViewModel: ObservableObject {
     public func requestCloseProcess(_ group: ProcessGroupSummary) {
         if group.isOrphanAutomation {
             resetBrowserAutomation()
+            return
+        }
+
+        if group.actionKind == .restartReplayd {
+            restartStuckReplayd(forceAlways: true)
             return
         }
 
@@ -1386,6 +1477,10 @@ public final class AppViewModel: ObservableObject {
             resetBrowserAutomation()
         case .killStuckChromeRenderers:
             killStuckChromeRenderers(forceAll: false)
+        case .resetChromeGPU:
+            resetChromeGPUProcess()
+        case .restartReplayd:
+            restartStuckReplayd(forceAlways: true)
         case .quitAppGracefully, .terminateUserProcess:
             if let group = processGroups.first(where: { $0.id == targetID }) {
                 requestCloseProcess(group)

@@ -477,7 +477,15 @@ suite.test("ProcessScanner assigns ProcessGuidance and safety levels accurately"
     try expectEqual(remote?.guidance.safetyLevel, .remoteKeepAlive)
 
     let replayd = groups.first { $0.id == "sys:replayd" }
-    try expectEqual(replayd?.guidance.safetyLevel, .systemProtected)
+    try expectEqual(replayd?.guidance.safetyLevel, .safeNow, "Wedged replayd (45% CPU) must be safeNow to restart")
+    try expectEqual(replayd?.actionKind, .restartReplayd)
+
+    // Healthy low-CPU replayd remains systemProtected
+    let healthyReplayd = ProcessScanner.aggregate([
+        RawProcessInfo(pid: 109, ppid: 1, cpuPercent: 1.5, rssBytes: 20_000_000, elapsed: "02:00", comm: "replayd", args: "/usr/libexec/replayd")
+    ]).first { $0.id == "sys:replayd" }
+    try expectEqual(healthyReplayd?.guidance.safetyLevel, .systemProtected)
+    try expectEqual(healthyReplayd?.actionKind, ProcessActionKind.none)
 
     let orphan = groups.first { $0.isOrphanAutomation }
     try expectEqual(orphan?.guidance.safetyLevel, .safeNow)
@@ -1687,6 +1695,168 @@ suite.test("v2.0: AutoOptimizer 1-hour schedule, RAM pressure trigger, and work-
     try expectEqual(decoded.autoCloseIdleApps, true)
     try expectEqual(decoded.idleAppTimeoutMinutes, 60)
     try expectEqual(decoded.autoThrottleBackgroundHogs, true)
+    try expectEqual(decoded.autoHealStuckReplayd, true)
+}
+
+suite.test("v2.0: Chrome Rescue detects normal Chrome GPU (excluding headless) and replayd XPC storm") {
+    let normalGPU = RawProcessInfo(
+        pid: 35664,
+        ppid: 35654,
+        cpuPercent: 10.5,
+        rssBytes: 180_000_000,
+        elapsed: "05:00",
+        comm: "Google Chrome Helper (GPU)",
+        args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/130/Helpers/Google Chrome Helper (GPU).app/Contents/MacOS/Google Chrome Helper (GPU) --type=gpu-process"
+    )
+    let headlessGPU = RawProcessInfo(
+        pid: 69860,
+        ppid: 69854,
+        cpuPercent: 18.0,
+        rssBytes: 120_000_000,
+        elapsed: "01:00",
+        comm: "Google Chrome Helper (GPU)",
+        args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (GPU) --type=gpu-process --headless --user-data-dir=/Users/ducdung/.openclaw/browser/openclaw/user-data"
+    )
+    let normalRenderer = RawProcessInfo(
+        pid: 85969,
+        ppid: 35654,
+        cpuPercent: 12.5,
+        rssBytes: 318 * 1_048_576,
+        elapsed: "00:45",
+        comm: "Google Chrome Helper (Renderer)",
+        args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer) --type=renderer"
+    )
+    let wedgedReplayd = RawProcessInfo(
+        pid: 14230,
+        ppid: 1,
+        cpuPercent: 142.0,
+        rssBytes: 42_000_000,
+        elapsed: "09-07:18:42",
+        comm: "replayd",
+        args: "/usr/libexec/replayd"
+    )
+
+    let aperitifGPU = RawProcessInfo(
+        pid: 31384,
+        ppid: 35654,
+        cpuPercent: 9.2,
+        rssBytes: 68_000_000,
+        elapsed: "07:53",
+        comm: "Google Chrome Helper (Aperitif GPU)",
+        args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/158.0.8127.88/Helpers/Google Chrome Helper (Aperitif GPU).app/Contents/MacOS/Google Chrome Helper (Aperitif GPU)"
+    )
+
+    try expect(ProcessScanner.isNormalChromeGPUProcess(normalGPU), "Normal GUI Chrome GPU must be detected")
+    try expect(ProcessScanner.isNormalChromeGPUProcess(aperitifGPU), "Chrome 158 Aperitif GPU helper must be detected")
+    try expect(!ProcessScanner.isNormalChromeGPUProcess(headlessGPU), "Headless OpenMausBot Chrome GPU must NOT be touched")
+    try expect(!ProcessScanner.isNormalChromeGPUProcess(normalRenderer), "Renderer must not match GPU helper")
+    try expect(ProcessScanner.isReplaydProcess(wedgedReplayd), "macOS /usr/libexec/replayd must be detected")
+
+    // HealthAnalyzer surfaces actionable 1-click replayd restart + JS/DOM loop + GPU loop findings
+    let snap = SystemSnapshot(
+        cpu: CPUMetrics(userPercent: 52, systemPercent: 31, idlePercent: 17, coreCount: 8, load1m: 7.8, load5m: 7.5, load15m: 7.1),
+        memory: MemoryMetrics(
+            totalBytes: 16 * 1_073_741_824,
+            activeBytes: 6 * 1_073_741_824,
+            inactiveBytes: 3 * 1_073_741_824,
+            wiredBytes: 2 * 1_073_741_824,
+            compressedBytes: 4 * 1_073_741_824,
+            freeBytes: 512 * 1_048_576,
+            purgeableBytes: 0,
+            swapTotalBytes: 13 * 1_073_741_824,
+            swapUsedBytes: 11 * 1_073_741_824,
+            swapins: 100,
+            swapouts: 200
+        ),
+        disk: DiskMetrics(totalBytes: 245_000_000_000, availableBytes: 60_000_000_000, usedBytes: 185_000_000_000)
+    )
+    let groups = ProcessScanner.aggregate([wedgedReplayd, normalGPU, normalRenderer])
+    let report = HealthAnalyzer.analyze(
+        snapshot: snap,
+        processGroups: groups,
+        stuckChromeRendererCount: 1,
+        stuckChromeRendererCPU: 12.5,
+        chromeGPUCPU: 10.5
+    )
+
+    let replaydFinding = report.findings.first { $0.id == "replayd-storm" }
+    try expect(replaydFinding != nil, "Should flag wedged replayd storm")
+    try expectEqual(replaydFinding?.recommendedAction, .restartReplayd)
+    try expectEqual(replaydFinding?.safetyLevel, .safeNow)
+    try expectEqual(replaydFinding?.actionLabel, "Reset replayd ngay")
+
+    let stuckTabFinding = report.findings.first { $0.id == "stuck-chrome-renderers" }
+    try expect(stuckTabFinding != nil, "Should flag 12.5% JS/DOM loop tab paired with 10.5% Chrome GPU")
+    try expectEqual(stuckTabFinding?.recommendedAction, .killStuckChromeRenderers)
+
+    // Standalone high Chrome GPU (>= 18%) without stuck renderers triggers chrome-gpu-loop
+    let gpuOnlyReport = HealthAnalyzer.analyze(
+        snapshot: snap,
+        processGroups: [],
+        stuckChromeRendererCount: 0,
+        stuckChromeRendererCPU: 0,
+        chromeGPUCPU: 22.0
+    )
+    let gpuFinding = gpuOnlyReport.findings.first { $0.id == "chrome-gpu-loop" }
+    try expect(gpuFinding != nil, "Should flag high standalone Chrome GPU load")
+    try expectEqual(gpuFinding?.recommendedAction, .resetChromeGPU)
+    try expectEqual(gpuFinding?.actionLabel, "Reset GPU Chrome")
+}
+
+suite.test("v2.0: AutoOptimizer triggers replaydStorm even when total CPU > 65% (caused by replayd)") {
+    let now = Date()
+    let cfg = AutoOptimizeConfig(isEnabled: true, autoHealStuckReplayd: true)
+
+    // System CPU is 88% (above 65% normal pause), yet replayd itself is 138% CPU -> MUST trigger replaydStorm!
+    let trigger = AutoOptimizerEngine.evaluateTrigger(
+        config: cfg,
+        lastRunAt: now.addingTimeInterval(-900), // 15 mins ago (>= 10 min cooldown)
+        availableDiskGB: 80.0,
+        cpuBusyPercent: 88.0,
+        compressedRAMGB: 2.0,
+        replaydCPUPercent: 138.0,
+        now: now
+    )
+    try expectEqual(trigger, .replaydStorm)
+
+    // Within 10-minute cooldown (300s) -> must NOT re-trigger repeatedly
+    let cooled = AutoOptimizerEngine.evaluateTrigger(
+        config: cfg,
+        lastRunAt: now.addingTimeInterval(-300),
+        availableDiskGB: 80.0,
+        cpuBusyPercent: 88.0,
+        compressedRAMGB: 2.0,
+        replaydCPUPercent: 138.0,
+        now: now
+    )
+    try expect(cooled == nil, "replaydStorm must obey 10-minute cooldown")
+
+    // Already throttled (nice +20) -> must NOT spam-kill replayd repeatedly when clients are looping
+    let alreadyMitigated = AutoOptimizerEngine.evaluateTrigger(
+        config: cfg,
+        lastRunAt: now.addingTimeInterval(-900),
+        availableDiskGB: 80.0,
+        cpuBusyPercent: 88.0,
+        compressedRAMGB: 2.0,
+        replaydCPUPercent: 138.0,
+        replaydAlreadyThrottled: true,
+        now: now
+    )
+    try expect(alreadyMitigated == nil, "Already reniced replayd must not be repeatedly auto-restarted")
+
+    // Disabled autoHealStuckReplayd -> respects normal high CPU pause
+    var disabledCfg = cfg
+    disabledCfg.autoHealStuckReplayd = false
+    let skipped = AutoOptimizerEngine.evaluateTrigger(
+        config: disabledCfg,
+        lastRunAt: now.addingTimeInterval(-900),
+        availableDiskGB: 80.0,
+        cpuBusyPercent: 88.0,
+        compressedRAMGB: 2.0,
+        replaydCPUPercent: 138.0,
+        now: now
+    )
+    try expect(skipped == nil, "Disabled autoHealStuckReplayd should stay paused under high CPU")
 }
 
 suite.summaryAndExit()

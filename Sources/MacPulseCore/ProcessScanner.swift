@@ -429,6 +429,28 @@ public enum ProcessScanner {
         return true
     }
 
+    /// Strictly matches the GPU helper of the user's normal GUI Google Chrome window
+    /// (safe to soft-reset: Chrome auto-respawns GPU helper in <0.5s with 0 closed tabs).
+    public static func isNormalChromeGPUProcess(_ proc: RawProcessInfo) -> Bool {
+        guard isAnyGoogleChromeProcess(proc) else { return false }
+        if isOrphanPuppeteerCommand(proc.args, comm: proc.comm) { return false }
+        let lower = proc.args.lowercased()
+        if lower.contains("agent-browser-profiles")
+            || lower.contains("playwright_chromiumdev_profile")
+            || lower.contains("puppeteer_dev_chrome_profile")
+            || lower.contains("--headless")
+            || lower.contains(".openmausbot/") {
+            return false
+        }
+        return lower.contains("--type=gpu-process") || proc.comm.contains("(GPU)") || proc.comm.contains("GPU)")
+    }
+
+    public static func isReplaydProcess(_ proc: RawProcessInfo) -> Bool {
+        let lowerComm = proc.comm.lowercased()
+        let lowerArgs = proc.args.lowercased()
+        return lowerComm == "replayd" || lowerArgs == "/usr/libexec/replayd" || lowerArgs.hasPrefix("/usr/libexec/replayd ")
+    }
+
     private static func extractBinaryName(from args: String) -> String {
         let beforeFlags = args.components(separatedBy: " --").first ?? args
         return URL(fileURLWithPath: beforeFlags.trimmingCharacters(in: .whitespaces)).lastPathComponent
@@ -527,8 +549,8 @@ public enum ProcessScanner {
             return ("app:\(appName)", appName, nil, .terminateUserProcess)
         }
 
-        if p.comm == "replayd" || args.contains("/usr/libexec/replayd") {
-            return ("sys:replayd", "replayd (macOS ScreenCapture)", nil, .none)
+        if isReplaydProcess(p) {
+            return ("sys:replayd", "replayd (macOS ScreenCapture)", nil, p.cpuPercent >= 25.0 ? .restartReplayd : .none)
         }
         if p.comm == "WindowServer" || args.contains("WindowServer") {
             return ("sys:WindowServer", "WindowServer (Đồ hoạ macOS)", nil, .none)
@@ -588,14 +610,19 @@ public enum ProcessScanner {
 
         if key.hasPrefix("sys:") || displayName == "MacPulse" {
             if key == "sys:replayd" {
+                let isWedged = cpuPercent >= 25.0
                 return ProcessGuidance(
-                    safetyLevel: .systemProtected,
-                    whatIsIt: "Dịch vụ chia sẻ/quay màn hình gốc của macOS (ScreenCapture daemon).",
-                    currentActivityHint: cpuPercent >= 20
-                        ? "Đang nhận yêu cầu chụp/đọc màn hình liên tục (\(cpuText)). Thường do app AI (ChatGPT/Codex), Loom hoặc automation kích hoạt."
+                    safetyLevel: isWedged ? .safeNow : .systemProtected,
+                    whatIsIt: "Dịch vụ ScreenCapture/ReplayKit của macOS (/usr/libexec/replayd).",
+                    currentActivityHint: isWedged
+                        ? "ĐANG BỊ TREO vòng lặp XPC (_Xmach_notify_port_destroyed • \(cpuText)), làm Google Chrome, OpenMausBot, ChatGPT và WindowServer cùng bị đốt CPU liên tục!"
                         : "Đang trực chờ chia sẻ màn hình ở mức nhẹ (\(cpuText), \(ramText)).",
-                    impactIfClosed: "Đây là tiến trình lõi macOS — không nên tắt trực tiếp vì hệ thống sẽ tự bật lại ngay hoặc ngắt quay màn hình.",
-                    recommendedHowTo: "Hãy đóng app đang gọi chụp màn hình (như ChatGPT, Codex Computer Use, Loom) thì replayd sẽ tự hạ tải."
+                    impactIfClosed: isWedged
+                        ? "An toàn 100%: Restart replayd để launchd tự khởi động lại sạch ở 0% CPU — giải cứu tức thì Chrome & máy mà KHÔNG đóng tab hay mất dữ liệu."
+                        : "Đang hoạt động bình thường, không cần khởi động lại.",
+                    recommendedHowTo: isWedged
+                        ? "Bấm \"Reset replayd\" để cắt đứt ngay bão XPC đang bóp nghẹt Chrome và toàn hệ thống."
+                        : "Giữ nguyên khi CPU đang thấp."
                 )
             }
             if displayName == "MacPulse" {

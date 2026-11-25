@@ -1,12 +1,44 @@
 import Foundation
 import Darwin
 
+public struct ReplaydResetReport: Sendable, Equatable {
+    public let restartedPIDs: [Int32]
+    public let previousCPUPercent: Double
+    public let postRestartCPUPercent: Double
+    public let didRestart: Bool
+    public let throttledNice: Bool
+    public let stillStormingFromClients: Bool
+    public let stormingClients: [String]
+    public let error: String?
+
+    public init(
+        restartedPIDs: [Int32] = [],
+        previousCPUPercent: Double = 0,
+        postRestartCPUPercent: Double = 0,
+        didRestart: Bool = false,
+        throttledNice: Bool = false,
+        stillStormingFromClients: Bool = false,
+        stormingClients: [String] = [],
+        error: String? = nil
+    ) {
+        self.restartedPIDs = restartedPIDs
+        self.previousCPUPercent = previousCPUPercent
+        self.postRestartCPUPercent = postRestartCPUPercent
+        self.didRestart = didRestart
+        self.throttledNice = throttledNice
+        self.stillStormingFromClients = stillStormingFromClients
+        self.stormingClients = stormingClients
+        self.error = error
+    }
+}
+
 public struct ChromeRescueReport: Sendable, Equatable {
     public let stoppedChromePIDs: [Int32]
     public let removedLockFiles: [String]
     public let freedBytes: UInt64
     public let cleanedPathCount: Int
     public let relaunchedChrome: Bool
+    public let restartedReplayd: Bool
     public let errors: [String]
 
     public init(
@@ -15,6 +47,7 @@ public struct ChromeRescueReport: Sendable, Equatable {
         freedBytes: UInt64,
         cleanedPathCount: Int,
         relaunchedChrome: Bool,
+        restartedReplayd: Bool = false,
         errors: [String]
     ) {
         self.stoppedChromePIDs = stoppedChromePIDs
@@ -22,6 +55,7 @@ public struct ChromeRescueReport: Sendable, Equatable {
         self.freedBytes = freedBytes
         self.cleanedPathCount = cleanedPathCount
         self.relaunchedChrome = relaunchedChrome
+        self.restartedReplayd = restartedReplayd
         self.errors = errors
     }
 }
@@ -362,6 +396,12 @@ public enum CleanupExecutor {
             }
         }
 
+        var didRestartReplayd = false
+        if !skipProcessTermination {
+            let r = restartStuckReplayd(minCPUPercent: 25.0, forceAlways: false)
+            didRestartReplayd = r.didRestart
+        }
+
         var didRelaunch = false
         if relaunch && !skipProcessTermination {
             let proc = Process()
@@ -385,8 +425,157 @@ public enum CleanupExecutor {
             freedBytes: freed,
             cleanedPathCount: cleanedCount,
             relaunchedChrome: didRelaunch,
+            restartedReplayd: didRestartReplayd,
             errors: errors
         )
+    }
+
+    /// Checks whether user-owned `replayd` PIDs have already been reniced (>= +15)
+    /// to prevent CPU starvation during persistent client-side `RPDaemonProxy` XPC storms.
+    public static func isReplaydThrottled(pids: [Int32]) -> Bool {
+        guard !pids.isEmpty else { return false }
+        for pid in pids where pid > 1 {
+            errno = 0
+            let prio = getpriority(PRIO_PROCESS, id_t(pid))
+            if errno == 0 && prio >= 15 {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Safely restarts a wedged user-owned `/usr/libexec/replayd` daemon spinning on XPC
+    /// (`_Xmach_notify_port_destroyed`).
+    /// - Uses `launchctl kickstart -k gui/<uid>/com.apple.replayd` first (clean Mach job reset) with `SIGTERM`/`SIGKILL` fallback.
+    /// - Verifies post-restart CPU after 1.2s: if existing clients (Chrome / headless Chrome / ChatGPT / Codex)
+    ///   immediately re-storm `RPDaemonProxy`, applies `nice +20` to `replayd` so interactive apps stay responsive
+    ///   and reports the storming client apps honestly.
+    public static func restartStuckReplayd(
+        minCPUPercent: Double = 20.0,
+        forceAlways: Bool = false,
+        liveProcesses: [RawProcessInfo]? = nil
+    ) -> ReplaydResetReport {
+        let isMocked = liveProcesses != nil
+        let procs = liveProcesses ?? ((try? ProcessScanner.scanLiveProcesses()) ?? [])
+        let targets = procs.filter { proc in
+            guard ProcessScanner.isReplaydProcess(proc) else { return false }
+            return forceAlways || proc.cpuPercent >= minCPUPercent
+        }
+        guard !targets.isEmpty else {
+            return ReplaydResetReport(didRestart: false)
+        }
+
+        let pids = Array(Set(targets.map(\.pid)))
+        let totalCPU = targets.reduce(0.0) { $0 + $1.cpuPercent }
+        var restartedPIDs: [Int32] = []
+
+        // 1. Clean LaunchAgent kickstart when running against the live OS
+        if !isMocked {
+            let kickstart = Process()
+            kickstart.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            kickstart.arguments = ["kickstart", "-k", "gui/\(getuid())/com.apple.replayd"]
+            kickstart.standardOutput = Pipe()
+            kickstart.standardError = Pipe()
+            try? kickstart.run()
+            kickstart.waitUntilExit()
+            usleep(250_000)
+
+            let exitedByKickstart = pids.filter { kill($0, 0) != 0 }
+            restartedPIDs.append(contentsOf: exitedByKickstart)
+        }
+
+        // 2. Fallback polite SIGTERM -> SIGKILL for any original PID still wedged
+        let remaining = pids.filter { !restartedPIDs.contains($0) }
+        if !remaining.isEmpty {
+            let termRes = terminatePIDs(remaining, force: false)
+            if !termRes.killed.isEmpty {
+                for _ in 0..<8 {
+                    let stillAlive = termRes.killed.contains { kill($0, 0) == 0 }
+                    if !stillAlive { break }
+                    usleep(50_000)
+                }
+                let stubborn = termRes.killed.filter { kill($0, 0) == 0 }
+                if !stubborn.isEmpty {
+                    _ = terminatePIDs(stubborn, force: true)
+                }
+                restartedPIDs.append(contentsOf: termRes.killed)
+            }
+        }
+
+        guard !restartedPIDs.isEmpty else {
+            return ReplaydResetReport(
+                restartedPIDs: [],
+                previousCPUPercent: totalCPU,
+                didRestart: false,
+                error: "Không đủ quyền khởi động lại replayd (cần tiến trình thuộc user hiện tại)."
+            )
+        }
+
+        if isMocked {
+            return ReplaydResetReport(
+                restartedPIDs: restartedPIDs,
+                previousCPUPercent: totalCPU,
+                postRestartCPUPercent: 0,
+                didRestart: true
+            )
+        }
+
+        // 3. Post-restart verification: check if clients immediately re-storm RPDaemonProxy
+        usleep(1_200_000)
+        let afterProcs = (try? ProcessScanner.scanLiveProcesses()) ?? []
+        let afterReplayd = afterProcs.filter { ProcessScanner.isReplaydProcess($0) }
+        let afterCPU = afterReplayd.reduce(0.0) { $0 + $1.cpuPercent }
+
+        var throttledNice = false
+        var stormingClients: [String] = []
+
+        if afterCPU >= 25.0 {
+            // Deprioritize wedged replayd to nice +20 so interactive Chrome UI, typing, and WindowServer never starve
+            for proc in afterReplayd where proc.pid > 1 {
+                if setpriority(PRIO_PROCESS, id_t(proc.pid), 20) == 0 {
+                    throttledNice = true
+                }
+            }
+            // Identify likely RPDaemonProxy client apps actively burning CPU right now
+            let afterGroups = ProcessScanner.aggregate(afterProcs)
+            let suspectIDs: Set<String> = [
+                "app:Google Chrome",
+                "orphan:puppeteer-chrome",
+                "app:ChatGPT",
+                "app:Codex",
+                "app:Codex Computer Use",
+                "app:Loom",
+                "app:Slack"
+            ]
+            stormingClients = afterGroups
+                .filter { suspectIDs.contains($0.id) && $0.totalCPUPercent >= 8.0 }
+                .sorted { $0.totalCPUPercent > $1.totalCPUPercent }
+                .prefix(4)
+                .map(\.displayName)
+        }
+
+        return ReplaydResetReport(
+            restartedPIDs: restartedPIDs,
+            previousCPUPercent: totalCPU,
+            postRestartCPUPercent: afterCPU,
+            didRestart: true,
+            throttledNice: throttledNice,
+            stillStormingFromClients: afterCPU >= 25.0,
+            stormingClients: stormingClients,
+            error: nil
+        )
+    }
+
+    /// Soft-resets ONLY normal GUI Google Chrome's GPU process (`--type=gpu-process`).
+    /// Chromium auto-respawns its GPU helper in <0.5s with zero closed tabs, zero lost forms, and clears VRAM/compositor loops.
+    public static func resetChromeGPUProcess() -> (restartedPIDs: [Int32], totalCPUFreed: Double) {
+        guard let live = try? ProcessScanner.scanLiveProcesses() else { return ([], 0) }
+        let gpus = live.filter { ProcessScanner.isNormalChromeGPUProcess($0) }
+        let pids = Array(Set(gpus.map(\.pid)))
+        guard !pids.isEmpty else { return ([], 0) }
+        let totalCPU = gpus.reduce(0.0) { $0 + $1.cpuPercent }
+        let res = terminatePIDs(pids, force: true)
+        return (res.killed, totalCPU)
     }
 
     public static func terminateOrphanPuppeteerProcesses(force: Bool = false) -> (killed: [Int32], failed: [Int32]) {
@@ -406,14 +595,16 @@ public enum CleanupExecutor {
         return (killed, failed)
     }
 
-    /// Kills stuck normal Chrome helper renderers (tabs pegged on high CPU or hung during local dev tasks)
+    /// Kills stuck normal Chrome helper renderers (tabs pegged on high CPU or JS/DOM leak loops)
     /// without closing the Chrome app or touching headless automation bots, preserving other windows, tabs, DevTools, and extensions.
-    public static func killStuckChromeRenderers(minCPUPercent: Double = 12.0, forceAllRenderers: Bool = false) -> (killedPIDs: [Int32], totalCPUFreed: Double) {
+    public static func killStuckChromeRenderers(minCPUPercent: Double = 10.0, forceAllRenderers: Bool = false) -> (killedPIDs: [Int32], totalCPUFreed: Double) {
         guard let live = try? ProcessScanner.scanLiveProcesses() else { return ([], 0) }
         let targetRenderers = live.filter { proc in
             guard ProcessScanner.isNormalChromeRendererProcess(proc) else { return false }
             if forceAllRenderers { return true }
-            return proc.cpuPercent >= minCPUPercent
+            let isHighCPU = proc.cpuPercent >= minCPUPercent
+            let isLeakingLoop = proc.cpuPercent >= 8.0 && proc.rssBytes >= 250 * 1_048_576
+            return isHighCPU || isLeakingLoop
         }
         let pids = Array(Set(targetRenderers.map(\.pid)))
         guard !pids.isEmpty else { return ([], 0) }

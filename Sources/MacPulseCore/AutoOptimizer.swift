@@ -48,6 +48,7 @@ public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
     public var autoCloseIdleApps: Bool             // Politely Cmd+Q unused background GUI apps
     public var idleAppTimeoutMinutes: Int          // 30, 60, 120, 240
     public var autoThrottleBackgroundHogs: Bool    // Politely nice +10 noisy Spotlight/iCloud/Photos indexers
+    public var autoHealStuckReplayd: Bool          // Automatically restart wedged macOS replayd spinning on XPC
     public var customProtectedBundleIDs: [String]  // Extra apps user locked from auto-close
     public var unlockedDefaultBundleIDs: [String]  // Default-protected apps user explicitly allowed to auto-close
 
@@ -96,6 +97,7 @@ public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
         autoCloseIdleApps: Bool = true,
         idleAppTimeoutMinutes: Int = 60,
         autoThrottleBackgroundHogs: Bool = true,
+        autoHealStuckReplayd: Bool = true,
         customProtectedBundleIDs: [String] = [],
         unlockedDefaultBundleIDs: [String] = []
     ) {
@@ -110,6 +112,7 @@ public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
         self.autoCloseIdleApps = autoCloseIdleApps
         self.idleAppTimeoutMinutes = idleAppTimeoutMinutes
         self.autoThrottleBackgroundHogs = autoThrottleBackgroundHogs
+        self.autoHealStuckReplayd = autoHealStuckReplayd
         self.customProtectedBundleIDs = customProtectedBundleIDs
         self.unlockedDefaultBundleIDs = unlockedDefaultBundleIDs
     }
@@ -117,7 +120,7 @@ public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case isEnabled, intervalHours, staleCacheDays, lowDiskTriggerGB
         case autoCleanStaleCaches, autoCleanUpdaterGarbage, autoTruncateOversizedLogs, autoCleanOrphanTempProfiles
-        case autoCloseIdleApps, idleAppTimeoutMinutes, autoThrottleBackgroundHogs
+        case autoCloseIdleApps, idleAppTimeoutMinutes, autoThrottleBackgroundHogs, autoHealStuckReplayd
         case customProtectedBundleIDs, unlockedDefaultBundleIDs
     }
 
@@ -134,6 +137,7 @@ public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
         self.autoCloseIdleApps = try c.decodeIfPresent(Bool.self, forKey: .autoCloseIdleApps) ?? true
         self.idleAppTimeoutMinutes = try c.decodeIfPresent(Int.self, forKey: .idleAppTimeoutMinutes) ?? 60
         self.autoThrottleBackgroundHogs = try c.decodeIfPresent(Bool.self, forKey: .autoThrottleBackgroundHogs) ?? true
+        self.autoHealStuckReplayd = try c.decodeIfPresent(Bool.self, forKey: .autoHealStuckReplayd) ?? true
         self.customProtectedBundleIDs = try c.decodeIfPresent([String].self, forKey: .customProtectedBundleIDs) ?? []
         self.unlockedDefaultBundleIDs = try c.decodeIfPresent([String].self, forKey: .unlockedDefaultBundleIDs) ?? []
     }
@@ -143,6 +147,7 @@ public enum AutoOptimizeTrigger: String, Codable, Sendable, Equatable {
     case scheduled = "Định kỳ"
     case lowDisk = "SSD thấp"
     case ramPressure = "RAM đầy"
+    case replaydStorm = "Bão replayd"
     case manual = "Thủ công"
 }
 
@@ -157,6 +162,7 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
     public let closedIdleApps: [String]
     public let reclaimedRAMBytes: UInt64
     public let throttledBackgroundCount: Int
+    public let restartedReplayd: Bool
     public let summary: String
 
     public init(
@@ -170,6 +176,7 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
         closedIdleApps: [String] = [],
         reclaimedRAMBytes: UInt64 = 0,
         throttledBackgroundCount: Int = 0,
+        restartedReplayd: Bool = false,
         summary: String
     ) {
         self.id = id
@@ -182,12 +189,13 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
         self.closedIdleApps = closedIdleApps
         self.reclaimedRAMBytes = reclaimedRAMBytes
         self.throttledBackgroundCount = throttledBackgroundCount
+        self.restartedReplayd = restartedReplayd
         self.summary = summary
     }
 
     enum CodingKeys: String, CodingKey {
         case id, timestamp, trigger, freedBytes, removedFilesCount, truncatedLogsCount, cleanedOrphanProfilesCount
-        case closedIdleApps, reclaimedRAMBytes, throttledBackgroundCount, summary
+        case closedIdleApps, reclaimedRAMBytes, throttledBackgroundCount, restartedReplayd, summary
     }
 
     public init(from decoder: Decoder) throws {
@@ -202,6 +210,7 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
         self.closedIdleApps = try c.decodeIfPresent([String].self, forKey: .closedIdleApps) ?? []
         self.reclaimedRAMBytes = try c.decodeIfPresent(UInt64.self, forKey: .reclaimedRAMBytes) ?? 0
         self.throttledBackgroundCount = try c.decodeIfPresent(Int.self, forKey: .throttledBackgroundCount) ?? 0
+        self.restartedReplayd = try c.decodeIfPresent(Bool.self, forKey: .restartedReplayd) ?? false
         self.summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
     }
 }
@@ -385,21 +394,31 @@ public enum AutoOptimizerEngine {
         return (throttled, seenNames)
     }
 
-    /// Determines whether Autopilot should run right now based on schedule (1h..24h), low disk, or high RAM compression.
-    /// Enforces safe CPU headroom (< 65%) and cooldown so it never thrashes the SSD.
+    /// Determines whether Autopilot should run right now based on schedule (1h..24h), low disk,
+    /// high RAM compression, or an emergency wedged macOS `replayd` XPC storm (>= 75% CPU).
     public static func evaluateTrigger(
         config: AutoOptimizeConfig,
         lastRunAt: Date?,
         availableDiskGB: Double,
         cpuBusyPercent: Double,
         compressedRAMGB: Double = 0.0,
+        replaydCPUPercent: Double = 0.0,
+        replaydAlreadyThrottled: Bool = false,
         now: Date = Date()
     ) -> AutoOptimizeTrigger? {
         guard config.isEnabled else { return nil }
+        let elapsedSinceLast = lastRunAt.map { now.timeIntervalSince($0) } ?? .infinity
+
+        // Emergency self-healing: a wedged replayd (>= 75% CPU) is the *cause* of high system CPU,
+        // so heal it even when cpuBusyPercent >= 65% (with 10-min cooldown).
+        // Skip repeated auto-restarts if replayd is already reniced to +20 (meaning client apps are re-storming it).
+        if config.autoHealStuckReplayd && replaydCPUPercent >= 75.0 && !replaydAlreadyThrottled && elapsedSinceLast >= 600 {
+            return .replaydStorm
+        }
+
         // Never compete with heavy user workload (building, rendering, etc.)
         if cpuBusyPercent >= 65.0 { return nil }
 
-        let elapsedSinceLast = lastRunAt.map { now.timeIntervalSince($0) } ?? .infinity
         let intervalSecs = TimeInterval(max(1, config.intervalHours) * 3600)
         // Use 55m cooldown when scheduled for 1h so a 5-min timer tick never slips to 1h05m;
         // otherwise keep 60m cooldown for SSD safety.
@@ -601,6 +620,20 @@ public enum AutoOptimizerEngine {
             throttledCount = throttleRes.count
         }
 
+        // 6. Auto-heal wedged macOS /usr/libexec/replayd spinning on XPC (only when real system pass, not mock empty proc test)
+        var didRestartReplayd = false
+        var replaydThrottledNice = false
+        if config.autoHealStuckReplayd && liveProcessArgs == nil {
+            let threshold: Double = (trigger == .manual || trigger == .replaydStorm) ? 25.0 : 45.0
+            let rep = CleanupExecutor.restartStuckReplayd(
+                minCPUPercent: threshold,
+                forceAlways: false,
+                liveProcesses: liveProcessesForThrottle
+            )
+            didRestartReplayd = rep.didRestart
+            replaydThrottledNice = rep.throttledNice
+        }
+
         let summary = buildSummary(
             freedBytes: totalFreed,
             removedFiles: removedFiles,
@@ -608,7 +641,9 @@ public enum AutoOptimizerEngine {
             cleanedProfiles: cleanedProfiles,
             closedIdleApps: closedIdleAppNames,
             reclaimedRAMBytes: reclaimedRAMBytes,
-            throttledCount: throttledCount
+            throttledCount: throttledCount,
+            restartedReplayd: didRestartReplayd,
+            replaydThrottledNice: replaydThrottledNice
         )
 
         return AutoOptimizeRunRecord(
@@ -621,6 +656,7 @@ public enum AutoOptimizerEngine {
             closedIdleApps: closedIdleAppNames,
             reclaimedRAMBytes: reclaimedRAMBytes,
             throttledBackgroundCount: throttledCount,
+            restartedReplayd: didRestartReplayd,
             summary: summary
         )
     }
@@ -632,9 +668,14 @@ public enum AutoOptimizerEngine {
         cleanedProfiles: Int,
         closedIdleApps: [String],
         reclaimedRAMBytes: UInt64,
-        throttledCount: Int
+        throttledCount: Int,
+        restartedReplayd: Bool = false,
+        replaydThrottledNice: Bool = false
     ) -> String {
         var parts: [String] = []
+        if restartedReplayd {
+            parts.append(replaydThrottledNice ? "Reset + hạ nice +20 replayd XPC" : "Reset replayd XPC bị treo")
+        }
         if freedBytes > 0 {
             parts.append("Dọn \(Formatters.bytes(freedBytes)) SSD")
         }

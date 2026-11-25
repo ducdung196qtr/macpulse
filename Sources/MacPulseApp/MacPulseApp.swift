@@ -363,7 +363,8 @@ private struct PopoverRootView: View {
         case .vietnamese:
             return (!vm.isAccessibilityTrusted || !vm.conflictingApps.isEmpty) ? HudTheme.amber : nil
         case .cleaner:
-            return (vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty) ? HudTheme.amber : nil
+            if vm.isReplaydStuck { return HudTheme.crimson }
+            return (vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty || vm.chromeGPUTotalCPU >= 15.0) ? HudTheme.amber : nil
         case .aiPulse:
             if !vm.openCodeRunningSessions.isEmpty { return HudTheme.cyan }
             if vm.openCodeUnreadCompletions > 0 { return HudTheme.emerald }

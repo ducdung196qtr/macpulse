@@ -107,10 +107,10 @@ struct ProcessRowView: View {
             }
         }
         .hudCard(
-            accent: group.isOrphanAutomation ? HudTheme.amber : (showGuidanceCard ? HudTheme.cyan : HudTheme.cyan.opacity(0.32)),
+            accent: group.actionKind == .restartReplayd ? HudTheme.crimson : (group.isOrphanAutomation ? HudTheme.amber : (showGuidanceCard ? HudTheme.cyan : HudTheme.cyan.opacity(0.32))),
             chamfer: 6,
             padding: 8,
-            showBrackets: group.isOrphanAutomation || showGuidanceCard
+            showBrackets: group.actionKind == .restartReplayd || group.isOrphanAutomation || showGuidanceCard
         )
     }
 
@@ -126,7 +126,13 @@ struct ProcessRowView: View {
 
     @ViewBuilder
     private var actionTrailingControl: some View {
-        if group.isOrphanAutomation {
+        if group.actionKind == .restartReplayd {
+            HudButton(title: "Reset ngay", color: HudTheme.crimson, filled: true, compact: true) {
+                vm.requestCloseProcess(group)
+            }
+            .accessibilityIdentifier("reset_\(group.id)")
+            .help("Restart macOS replayd bị treo XPC — cắt đứt bão CPU bóp Chrome, giữ nguyên mọi tab")
+        } else if group.isOrphanAutomation {
             HudButton(title: "Dừng & Reset", color: HudTheme.amber, filled: true, compact: true) {
                 vm.requestCloseProcess(group)
             }
