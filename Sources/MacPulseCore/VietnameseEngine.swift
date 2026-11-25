@@ -243,6 +243,7 @@ public enum VietnameseAppDetector {
         "com.apple.safari",
         "com.apple.safaritechnologypreview",
         "com.apple.spotlight",
+        "com.raycast.macos",
         "com.microsoft.edgemac",
         "com.microsoft.edge",
         "com.microsoft.edge.dev",
@@ -261,12 +262,12 @@ public enum VietnameseAppDetector {
         let nLower = appName.lowercased()
         if bLower.contains("chrome") || bLower.contains("safari") || bLower.contains("edge")
             || bLower.contains("brave") || bLower.contains("opera") || bLower.contains("firefox")
-            || bLower.contains("arc") || bLower.contains("spotlight") {
+            || bLower.contains("vivaldi") || bLower.contains("spotlight") || bLower.contains("raycast") {
             return true
         }
         if nLower.contains("chrome") || nLower.contains("safari") || nLower.contains("edge")
             || nLower.contains("brave") || nLower.contains("opera") || nLower.contains("firefox")
-            || nLower.contains("arc") || nLower == "spotlight" {
+            || nLower == "arc" || nLower == "spotlight" || nLower == "raycast" {
             return true
         }
         return false
@@ -765,9 +766,9 @@ public final class VietnameseEngine {
 
         // In-flight English word recognition & tone unroll:
         // In Vietnamese phonotactics, a vowel can NEVER follow a tone mark unless it forms a valid diphthong/triphthong.
-        // Also, Vietnamese codas can NEVER be consonant clusters (e.g. 'st', 'rt', 'rd', 'rk', 'ft').
+        // Also, Vietnamese codas can NEVER be invalid consonants (e.g. 'l', 'v', 'k') or clusters (e.g. 'st', 'rt', 'rd', 'rk', 'ft').
         // If a tone was applied and typing the next character forms an English word/stem or invalid Vietnamese syllable,
-        // unroll the tone key back into a literal consonant (e.g. 'té' + 't' -> 'test', 're' + 's' + 'e' -> 'reset').
+        // unroll using exact rawKeys so characters are never scrambled (e.g. 'té'+'t' -> 'test', 'réu'+'l' -> 'resul', 'ú'+'e' -> 'use').
         if settings.spellCheckEnabled && tone != .none, let tk = toneKey {
             let isVowel = (lower == "a" || lower == "e" || lower == "i" || lower == "o" || lower == "u" || lower == "y")
             let sInfo = analyzeSyllable(slots)
@@ -778,27 +779,33 @@ public final class VietnameseEngine {
                 candidate.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
                 if !isSyllablePrefixValid(slots: candidate, tone: tone) {
                     shouldUnroll = true
+                } else if sInfo.onsetRange.isEmpty && slots.count == 1 && slots[0].base == "u" && lower == "e" {
+                    // Protect English 'use' / 'user' / 'used' (Vietnamese 'uế' is typed 'uees' or 'uese', never 'use')
+                    shouldUnroll = true
                 }
             } else if !isVowel && sInfo.codaRange.isEmpty {
-                var unrolled = slots
-                if tk.isLetter {
-                    unrolled.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
-                }
-                unrolled.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
-                let unrolledStr = unrolled.map { String($0.base) }.joined().lowercased()
-                if Self.commonEnglishWords.contains(unrolledStr) || Self.commonEnglishStems.contains(unrolledStr) {
+                var candidate = slots
+                candidate.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+                if !isSyllablePrefixValid(slots: candidate, tone: tone) {
                     shouldUnroll = true
+                } else {
+                    var unrolled = slots
+                    if tk.isLetter {
+                        unrolled.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
+                    }
+                    unrolled.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+                    let unrolledStr = unrolled.map { String($0.base) }.joined().lowercased()
+                    if Self.commonEnglishWords.contains(unrolledStr) || Self.commonEnglishStems.contains(unrolledStr) {
+                        shouldUnroll = true
+                    }
                 }
             }
 
             if shouldUnroll {
                 tone = .none
                 toneKey = nil
-                if tk.isLetter {
-                    slots.append(CharSlot(base: Character(tk.lowercased()), shape: .plain, isUpper: tk.isUppercase))
-                }
-                slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
-                rawKeys = slots.map { renderChar(base: $0.base, shape: .plain, tone: .none, upper: $0.isUpper) }
+                rawKeys.append(effectiveChar)
+                slots = rawKeys.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
                 hasPendingUndoMismatch = false
                 isRestoredToRaw = true
                 let nextRendered = render(slots: slots, tone: tone)
@@ -818,6 +825,18 @@ public final class VietnameseEngine {
 
         rawKeys.append(effectiveChar)
         slots.append(CharSlot(base: lower, shape: .plain, isUpper: effectiveChar.isUppercase))
+
+        // In-flight restore for unambiguous English words that temporarily form a circumflex syllable (e.g. 'r-e-s-e-t' -> 'reset')
+        if settings.smartEnglishRestore && !isRestoredToRaw && tone != .none {
+            let rawLower = String(rawKeys).lowercased()
+            if Self.inFlightEnglishRestoreWords.contains(rawLower) {
+                tone = .none
+                toneKey = nil
+                isRestoredToRaw = true
+                slots = rawKeys.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
+                return diffAction(from: prevRendered, to: String(rawKeys))
+            }
+        }
 
         upgradeUOHornWithCodaIfNeeded()
 
@@ -908,7 +927,6 @@ public final class VietnameseEngine {
     }
 
     private func tryApplyCircumflex(char: Character, lower: Character, prevRendered: String, isVNI: Bool) -> KeyAction? {
-        guard tone == .none else { return nil }
         let targets: [Character] = isVNI ? ["a", "e", "o"] : [lower]
         let sInfo = analyzeSyllable(slots)
 
@@ -1302,11 +1320,18 @@ public final class VietnameseEngine {
     /// Composing prefixes allowed mid-word before user presses the circumflex/horn key (e.g. 't-i-e-n-g-s' -> 't-i-ê-n-g-s')
     private static let composingOnlyRhymes: Set<String> = [
         "ic", "uyc", "yc", "oon",
+        "enh", "eu",
         "ie", "iec", "iem", "ien", "ieng", "iep", "iet", "ieu",
+        "uan", "uang", "uat", "uay",
+        "ue", "uec", "uech", "uen", "uenh",
         "uo", "uoc", "uom", "uon", "uong", "uop", "uot", "uoi", "uou",
         "uye", "uyen", "uyet",
         "ye", "yem", "yen", "yeng", "yet", "yeu",
         "uu", "ưo", "ưoc", "ưoi", "ưom", "ưon", "ưong", "ưop", "ưot", "ưou"
+    ]
+
+    private static let inFlightEnglishRestoreWords: Set<String> = [
+        "reset", "resets"
     ]
 
     private static let validRhymes: Set<String> = [
@@ -1359,12 +1384,12 @@ public final class VietnameseEngine {
         "ci", "cd", "spec", "suite", "runner", "lint",
 
         // Common conversational & internet English words
-        "the", "and", "for", "with", "from", "have", "this", "that", "your",
+        "the", "and", "for", "with", "from", "have", "that", "your",
         "more", "make", "like", "just", "know", "take", "people", "into",
         "year", "good", "some", "could", "them", "other", "than", "then",
         "now", "look", "only", "come", "its", "over", "think", "also",
         "back", "after", "use", "two", "how", "our", "work", "first",
-        "well", "way", "even", "new", "want", "because", "any", "these",
+        "well", "way", "even", "new", "want", "because", "any",
         "give", "day", "most", "us", "facebook", "google", "apple", "microsoft",
         "youtube", "tiktok", "zalo", "telegram", "slack", "discord", "zoom",
         "chrome", "safari", "iphone", "ipad", "macbook", "laptop", "online",

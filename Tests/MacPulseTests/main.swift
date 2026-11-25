@@ -1385,6 +1385,119 @@ suite.test("v2.0: AutoOptimizerStore persists and reloads config, lifetime freed
     try expectEqual(reloaded.history.first?.removedFilesCount, 42)
 }
 
+suite.test("IME 45: Fast typing circumflex after tone in Telex and VNI (tiếng, việt, bộ, về, đến, một, rồi, vẫn, thế)") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+
+    // tiếng
+    try expectEqual(eng.simulate("tieengs"), "tiếng")
+    try expectEqual(eng.simulate("tienges"), "tiếng")
+    try expectEqual(eng.simulate("tiengse"), "tiếng")
+    try expectEqual(eng.simulate("tieseng"), "tiếng")
+    try expectEqual(eng.simulate("tiesnge"), "tiếng")
+    try expectEqual(eng.simulate("tiensge"), "tiếng")
+
+    // việt & viết
+    try expectEqual(eng.simulate("vieetj"), "việt")
+    try expectEqual(eng.simulate("vietej"), "việt")
+    try expectEqual(eng.simulate("vietje"), "việt")
+    try expectEqual(eng.simulate("viejet"), "việt")
+    try expectEqual(eng.simulate("viejte"), "việt")
+    try expectEqual(eng.simulate("vietse"), "viết")
+    try expectEqual(eng.simulate("vieset"), "viết")
+
+    // bộ, về, đến, một, rồi, cần, vẫn, nhiều, muốn, xuống, thuộc
+    try expectEqual(eng.simulate("bojo"), "bộ")
+    try expectEqual(eng.simulate("vefe"), "về")
+    try expectEqual(eng.simulate("ddense"), "đến")
+    try expectEqual(eng.simulate("ddesen"), "đến")
+    try expectEqual(eng.simulate("motjo"), "một")
+    try expectEqual(eng.simulate("mojot"), "một")
+    try expectEqual(eng.simulate("roifo"), "rồi")
+    try expectEqual(eng.simulate("rofio"), "rồi")
+    try expectEqual(eng.simulate("rofoi"), "rồi")
+    try expectEqual(eng.simulate("canfa"), "cần")
+    try expectEqual(eng.simulate("cafan"), "cần")
+    try expectEqual(eng.simulate("vanxa"), "vẫn")
+    try expectEqual(eng.simulate("vaxan"), "vẫn")
+    try expectEqual(eng.simulate("nhieufe"), "nhiều")
+    try expectEqual(eng.simulate("nhiefeu"), "nhiều")
+    try expectEqual(eng.simulate("muonso"), "muốn")
+    try expectEqual(eng.simulate("xuongso"), "xuống")
+    try expectEqual(eng.simulate("thuocjo"), "thuộc")
+
+    // Protect Vietnamese thế / thể / thí on Space
+    try expectEqual(eng.simulate("these "), "thế ")
+    try expectEqual(eng.simulate("there "), "thể ")
+    try expectEqual(eng.simulate("this "), "thí ")
+
+    // VNI tone-before-circumflex
+    let vni = VietnameseEngine(settings: VietnameseSettings(inputMethod: .vni))
+    try expectEqual(vni.simulate("e16"), "ế")
+    try expectEqual(vni.simulate("o56"), "ộ")
+    try expectEqual(vni.simulate("a26"), "ầ")
+    try expectEqual(vni.simulate("viet56"), "việt")
+    try expectEqual(vni.simulate("tieng16"), "tiếng")
+}
+
+suite.test("IME 46: Composing rhymes (uê, êu, ênh, uâ) + English words + accurate browser detector") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+
+    // uê
+    try expectEqual(eng.simulate("thuee"), "thuê")
+    try expectEqual(eng.simulate("thuees"), "thuế")
+    try expectEqual(eng.simulate("thuese"), "thuế")
+    try expectEqual(eng.simulate("huees"), "huế")
+    try expectEqual(eng.simulate("huese"), "huế")
+    try expectEqual(eng.simulate("hueej"), "huệ")
+    try expectEqual(eng.simulate("hueje"), "huệ")
+    try expectEqual(eng.simulate("khueechs"), "khuếch")
+    try expectEqual(eng.simulate("khuechse"), "khuếch")
+
+    // êu
+    try expectEqual(eng.simulate("neeus"), "nếu")
+    try expectEqual(eng.simulate("neues"), "nếu")
+    try expectEqual(eng.simulate("neuse"), "nếu")
+    try expectEqual(eng.simulate("neseu"), "nếu")
+    try expectEqual(eng.simulate("nesue"), "nếu")
+    try expectEqual(eng.simulate("ddeuef"), "đều")
+    try expectEqual(eng.simulate("ddeufe"), "đều")
+    try expectEqual(eng.simulate("keue"), "kêu")
+
+    // ênh
+    try expectEqual(eng.simulate("beenhj"), "bệnh")
+    try expectEqual(eng.simulate("benhej"), "bệnh")
+    try expectEqual(eng.simulate("benhje"), "bệnh")
+    try expectEqual(eng.simulate("kenhe"), "kênh")
+    try expectEqual(eng.simulate("lenhej"), "lệnh")
+    try expectEqual(eng.simulate("chenhe"), "chênh")
+
+    // uâ
+    try expectEqual(eng.simulate("tuaanf"), "tuần")
+    try expectEqual(eng.simulate("tuanaf"), "tuần")
+    try expectEqual(eng.simulate("tuanfa"), "tuần")
+    try expectEqual(eng.simulate("xuana"), "xuân")
+    try expectEqual(eng.simulate("thuanaj"), "thuận")
+    try expectEqual(eng.simulate("thuanja"), "thuận")
+    try expectEqual(eng.simulate("luataj"), "luật")
+    try expectEqual(eng.simulate("xuatas"), "xuất")
+    try expectEqual(eng.simulate("xuatsa"), "xuất")
+    try expectEqual(eng.simulate("chuanar"), "chuẩn")
+
+    // English words still unroll cleanly
+    try expectEqual(eng.simulate("reset"), "reset")
+    try expectEqual(eng.simulate("reset "), "reset ")
+    try expectEqual(eng.simulate("result"), "result")
+    try expectEqual(eng.simulate("result "), "result ")
+    try expectEqual(eng.simulate("user"), "user")
+    try expectEqual(eng.simulate("user "), "user ")
+    try expectEqual(eng.simulate("use "), "use ")
+
+    // Browser detector must not false-match "arc" inside unrelated app names
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "company.thebrowser.Browser"), "Arc bundle must match")
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.raycast.macos"), "Raycast must match")
+    try expect(!VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.apple.archiveutility", appName: "Archive Utility"), "Archive Utility must NOT match Arc browser")
+}
+
 suite.summaryAndExit()
 
 

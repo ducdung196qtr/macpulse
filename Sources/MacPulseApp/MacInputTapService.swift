@@ -80,6 +80,8 @@ public final class MacInputTapService {
         var useCapsLock: Bool
         var fixChrome: Bool
         var isExcludedApp: Bool
+        var isBrowserApp: Bool
+        var isOmniboxFocused: Bool
     }
 
     private var stateLock = os_unfair_lock()
@@ -88,6 +90,9 @@ public final class MacInputTapService {
     private var perAppEnabled: [String: Bool]
     private var currentBundleID: String
     private var currentAppName: String
+    private var currentAppPID: pid_t = 0
+    private var focusCheckGeneration: UInt64 = 0
+    private let focusCheckQueue = DispatchQueue(label: "com.macpulse.ime.focus", qos: .utility)
 
     // Snapshot of hot-path settings accessed under os_unfair_lock (~15ns, zero data race)
     private var fastState: TapFastState
@@ -100,6 +105,7 @@ public final class MacInputTapService {
     }
 
     private var eventSource: CGEventSource?
+    private var lastSyntheticTimestamp: UInt64 = 0
 
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
@@ -124,9 +130,13 @@ public final class MacInputTapService {
         let front = NSWorkspace.shared.frontmostApplication
         let frontBid = front?.bundleIdentifier ?? ""
         let frontName = front?.localizedName ?? frontBid
+        let frontPID = front?.processIdentifier ?? 0
         self.currentBundleID = frontBid
         self.currentAppName = frontName
+        self.currentAppPID = frontPID
         let isExcluded = Self.computeIsAppExcluded(bundleID: frontBid, appName: frontName, settings: settings, perAppEnabled: perAppEnabled)
+        let isBrowser = VietnameseAppDetector.isBrowserOrSearchApp(bundleID: frontBid, appName: frontName)
+        let alwaysOmnibox = Self.isAlwaysSearchBarApp(bundleID: frontBid)
         var initialEnabled = settings.isEnabled
         if settings.smartSwitchPerApp && !frontBid.isEmpty {
             if let saved = perAppEnabled[frontBid] {
@@ -142,10 +152,15 @@ public final class MacInputTapService {
             hotkey: settings.hotkey,
             useCapsLock: settings.useCapsLockToSwitch,
             fixChrome: settings.fixChromiumAutocomplete,
-            isExcludedApp: isExcluded
+            isExcludedApp: isExcluded,
+            isBrowserApp: isBrowser,
+            isOmniboxFocused: alwaysOmnibox
         )
         // Use private state event source so synthetic events NEVER contaminate hardware HID device state
         self.eventSource = CGEventSource(stateID: .privateState)
+        if isBrowser && !alwaysOmnibox && frontPID > 0 {
+            scheduleOmniboxFocusRefresh(pid: frontPID, bundleID: frontBid, delayMs: 0)
+        }
     }
 
     deinit {
@@ -174,12 +189,16 @@ public final class MacInputTapService {
         settings = newSettings
         engine.settings = newSettings
         let isExcluded = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings, perAppEnabled: perAppEnabled)
+        let isBrowser = VietnameseAppDetector.isBrowserOrSearchApp(bundleID: currentBundleID, appName: currentAppName)
+        let prevOmnibox = fastState.isOmniboxFocused
         fastState = TapFastState(
             isEnabled: newSettings.isEnabled,
             hotkey: newSettings.hotkey,
             useCapsLock: newSettings.useCapsLockToSwitch,
             fixChrome: newSettings.fixChromiumAutocomplete,
-            isExcludedApp: isExcluded
+            isExcludedApp: isExcluded,
+            isBrowserApp: isBrowser,
+            isOmniboxFocused: isBrowser ? prevOmnibox : false
         )
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
         if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
@@ -357,13 +376,20 @@ public final class MacInputTapService {
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             let bid = app.bundleIdentifier ?? ""
             let name = app.localizedName ?? bid
+            let pid = app.processIdentifier
+            let isBrowser = VietnameseAppDetector.isBrowserOrSearchApp(bundleID: bid, appName: name)
+            let alwaysOmnibox = Self.isAlwaysSearchBarApp(bundleID: bid)
 
             os_unfair_lock_lock(&self.stateLock)
             self.currentBundleID = bid
             self.currentAppName = name
+            self.currentAppPID = pid
             self.engine.reset()
             let isExcluded = Self.computeIsAppExcluded(bundleID: bid, appName: name, settings: self.settings, perAppEnabled: self.perAppEnabled)
             self.fastState.isExcludedApp = isExcluded
+            self.fastState.isBrowserApp = isBrowser
+            self.fastState.isOmniboxFocused = alwaysOmnibox
+            let shouldCheckFocus = isBrowser && !alwaysOmnibox && self.fastState.fixChrome && pid > 0
             var switchedLanguage: Bool?
             if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
                 if let saved = self.perAppEnabled[bid] {
@@ -385,6 +411,10 @@ public final class MacInputTapService {
             }
             os_unfair_lock_unlock(&self.stateLock)
 
+            if shouldCheckFocus {
+                self.scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 30)
+            }
+
             DispatchQueue.main.async {
                 self.onFrontmostAppChanged?(bid, name)
                 if let lang = switchedLanguage {
@@ -392,6 +422,95 @@ public final class MacInputTapService {
                 }
             }
         }
+    }
+
+    private static func isAlwaysSearchBarApp(bundleID: String) -> Bool {
+        let lower = bundleID.lowercased()
+        return lower == "com.apple.spotlight" || lower == "com.raycast.macos"
+    }
+
+    private func scheduleOmniboxFocusRefresh(pid: pid_t, bundleID: String, delayMs: Int) {
+        guard pid > 0 else { return }
+        os_unfair_lock_lock(&stateLock)
+        focusCheckGeneration &+= 1
+        let gen = focusCheckGeneration
+        os_unfair_lock_unlock(&stateLock)
+
+        let work = { [weak self] in
+            guard let self else { return }
+            let focusedOmnibox = Self.isFocusedElementBrowserOmnibox(pid: pid, bundleID: bundleID)
+            os_unfair_lock_lock(&self.stateLock)
+            if self.focusCheckGeneration == gen && self.currentAppPID == pid && self.fastState.isBrowserApp {
+                self.fastState.isOmniboxFocused = focusedOmnibox
+            }
+            os_unfair_lock_unlock(&self.stateLock)
+        }
+
+        if delayMs > 0 {
+            focusCheckQueue.asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: work)
+        } else {
+            focusCheckQueue.async(execute: work)
+        }
+    }
+
+    /// Runs strictly off the EventTap thread on `.utility` QoS to detect whether focus in a browser
+    /// is inside the native Omnibox/address bar (needs autocomplete collapse) vs inside a web page DOM
+    /// (zero extra chars, zero extra backspaces).
+    private static func isFocusedElementBrowserOmnibox(pid: pid_t, bundleID: String) -> Bool {
+        if isAlwaysSearchBarApp(bundleID: bundleID) {
+            return true
+        }
+        let appEl = AXUIElementCreateApplication(pid)
+        var focusedObj: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &focusedObj) == .success,
+              let focusedObj,
+              CFGetTypeID(focusedObj) == AXUIElementGetTypeID() else {
+            return false
+        }
+        let focused = focusedObj as! AXUIElement
+
+        var roleObj: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(focused, kAXRoleAttribute as CFString, &roleObj) == .success,
+              let role = roleObj as? String else {
+            return false
+        }
+
+        // Address bar / Omnibox is always AXTextField or AXComboBox — never AXTextArea, AXWebArea, AXGroup
+        guard role == "AXTextField" || role == "AXComboBox" else {
+            return false
+        }
+
+        // Chromium & WebKit DOM inputs expose AXDOMClassList; native Omnibox chrome does not
+        var domClassObj: CFTypeRef?
+        if AXUIElementCopyAttributeValue(focused, "AXDOMClassList" as CFString, &domClassObj) == .success,
+           domClassObj != nil {
+            return false
+        }
+
+        // Walk up parent chain (bounded) — anything inside AXWebArea is a webpage input, not the Omnibox
+        var cursor = focused
+        for _ in 0..<14 {
+            var parentObj: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(cursor, kAXParentAttribute as CFString, &parentObj) == .success,
+                  let parentObj,
+                  CFGetTypeID(parentObj) == AXUIElementGetTypeID() else {
+                break
+            }
+            let parent = parentObj as! AXUIElement
+            var pRoleObj: CFTypeRef?
+            if AXUIElementCopyAttributeValue(parent, kAXRoleAttribute as CFString, &pRoleObj) == .success,
+               let pRole = pRoleObj as? String {
+                if pRole == "AXWebArea" {
+                    return false
+                }
+                if pRole == "AXWindow" || pRole == "AXApplication" {
+                    break
+                }
+            }
+            cursor = parent
+        }
+
+        return true
     }
 
     private func setTapState(_ newState: TapRuntimeState) {
@@ -507,11 +626,17 @@ public final class MacInputTapService {
         }
 
         if type == .leftMouseDown || type == .rightMouseDown {
-            let snap = readFastState()
+            os_unfair_lock_lock(&stateLock)
+            let snap = fastState
+            let pid = currentAppPID
+            let bid = currentBundleID
             if snap.isEnabled {
-                os_unfair_lock_lock(&stateLock)
                 engine.reset()
-                os_unfair_lock_unlock(&stateLock)
+            }
+            os_unfair_lock_unlock(&stateLock)
+
+            if type == .leftMouseDown && snap.isBrowserApp && snap.fixChrome && !Self.isAlwaysSearchBarApp(bundleID: bid) && pid > 0 {
+                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -615,7 +740,15 @@ public final class MacInputTapService {
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskSecondaryFn) {
             os_unfair_lock_lock(&stateLock)
             engine.reset()
+            let pid = currentAppPID
+            let bid = currentBundleID
+            let refreshFocus = fastState.isBrowserApp && fastState.fixChrome
+                && flags.contains(.maskCommand)
+                && (keyCode == 0x25 || keyCode == 0x11 || keyCode == 0x28 || keyCode == 0x2D) // Cmd+L, T, K, N
             os_unfair_lock_unlock(&stateLock)
+            if refreshFocus && pid > 0 {
+                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -623,23 +756,34 @@ public final class MacInputTapService {
         case 0x24, 0x4C, 0x30, 0x75, 0x7B, 0x7C, 0x7D, 0x7E, 0x73, 0x77, 0x74, 0x79:
             os_unfair_lock_lock(&stateLock)
             engine.reset()
+            let pid = currentAppPID
+            let bid = currentBundleID
+            let refreshFocus = fastState.isBrowserApp && fastState.fixChrome
+                && (keyCode == 0x24 || keyCode == 0x4C || keyCode == 0x30) // Return, Enter, Tab
             os_unfair_lock_unlock(&stateLock)
+            if refreshFocus && pid > 0 {
+                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
+            }
             return Unmanaged.passUnretained(event)
         case 0x33:
             os_unfair_lock_lock(&stateLock)
             let action = engine.processBackspace()
-            let bundleID = currentBundleID
-            let fixChrome = fastState.fixChrome
+            let needsOmniboxFix = fastState.fixChrome && fastState.isOmniboxFocused
             os_unfair_lock_unlock(&stateLock)
-            return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
+            return applyAction(action, proxy: proxy, originalEvent: event, needsOmniboxFix: needsOmniboxFix)
         case 0x35:
             os_unfair_lock_lock(&stateLock)
             let action = engine.processEscape()
-            let bundleID = currentBundleID
-            let fixChrome = fastState.fixChrome
+            let needsOmniboxFix = fastState.fixChrome && fastState.isOmniboxFocused
+            let pid = currentAppPID
+            let bid = currentBundleID
+            let refreshFocus = fastState.isBrowserApp && fastState.fixChrome
             os_unfair_lock_unlock(&stateLock)
+            if refreshFocus && pid > 0 {
+                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
+            }
             if case .replace = action {
-                return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
+                return applyAction(action, proxy: proxy, originalEvent: event, needsOmniboxFix: needsOmniboxFix)
             }
             return Unmanaged.passUnretained(event)
         default:
@@ -654,9 +798,14 @@ public final class MacInputTapService {
             return Unmanaged.passUnretained(event)
         }
 
+        // Zero-allocation stack buffer extraction for single UTF-16 character (99.9% of keypresses)
         var actualLength = 0
-        var uniChars = [UniChar](repeating: 0, count: 8)
-        event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &actualLength, unicodeString: &uniChars)
+        var stackBuf: (UniChar, UniChar, UniChar, UniChar) = (0, 0, 0, 0)
+        withUnsafeMutablePointer(to: &stackBuf) { ptr in
+            ptr.withMemoryRebound(to: UniChar.self, capacity: 4) { uniPtr in
+                event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &actualLength, unicodeString: uniPtr)
+            }
+        }
         guard actualLength > 0 else {
             os_unfair_lock_lock(&stateLock)
             engine.reset()
@@ -664,21 +813,27 @@ public final class MacInputTapService {
             return Unmanaged.passUnretained(event)
         }
 
-        let inputStr = String(utf16CodeUnits: Array(uniChars.prefix(actualLength)), count: actualLength)
-        guard inputStr.count == 1, let ch = inputStr.first else {
-            os_unfair_lock_lock(&stateLock)
-            engine.reset()
-            os_unfair_lock_unlock(&stateLock)
-            return Unmanaged.passUnretained(event)
+        let ch: Character
+        if actualLength == 1, let scalar = UnicodeScalar(stackBuf.0) {
+            ch = Character(scalar)
+        } else {
+            let units: [UniChar] = [stackBuf.0, stackBuf.1, stackBuf.2, stackBuf.3]
+            let inputStr = String(utf16CodeUnits: units, count: min(actualLength, 4))
+            guard inputStr.count == 1, let first = inputStr.first else {
+                os_unfair_lock_lock(&stateLock)
+                engine.reset()
+                os_unfair_lock_unlock(&stateLock)
+                return Unmanaged.passUnretained(event)
+            }
+            ch = first
         }
 
         os_unfair_lock_lock(&stateLock)
         let action = engine.processCharacter(ch)
-        let bundleID = currentBundleID
-        let fixChrome = fastState.fixChrome
+        let needsOmniboxFix = fastState.fixChrome && fastState.isOmniboxFocused
         os_unfair_lock_unlock(&stateLock)
 
-        return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
+        return applyAction(action, proxy: proxy, originalEvent: event, needsOmniboxFix: needsOmniboxFix)
     }
 
     private func toggleLanguageFromHotkey() {
@@ -709,8 +864,7 @@ public final class MacInputTapService {
         _ action: KeyAction,
         proxy: CGEventTapProxy,
         originalEvent: CGEvent,
-        bundleID: String,
-        fixChrome: Bool
+        needsOmniboxFix: Bool
     ) -> Unmanaged<CGEvent>? {
         switch action {
         case .passthrough:
@@ -727,96 +881,87 @@ public final class MacInputTapService {
                 proxy: proxy,
                 backspaceCount: backspaceCount,
                 text: text,
-                bundleID: bundleID,
-                fixChrome: fixChrome
+                needsOmniboxFix: needsOmniboxFix
             )
             return nil
         }
     }
 
+    @inline(__always)
+    private func nextMonotonicTimestamp() -> UInt64 {
+        let now = mach_absolute_time()
+        let next = now > lastSyntheticTimestamp ? now : (lastSyntheticTimestamp &+ 1)
+        lastSyntheticTimestamp = next
+        return next
+    }
+
+    /// Zero-usleep instant HID event injection via synchronous FIFO `tapPostEvent(proxy)`.
+    /// Eliminates 15–45ms callback stalls and `.tapDisabledByTimeout` drops during rapid typing.
     private func postReplacement(
         proxy: CGEventTapProxy,
         backspaceCount: Int,
         text: String,
-        bundleID: String,
-        fixChrome: Bool
+        needsOmniboxFix: Bool
     ) {
         guard let src = eventSource else { return }
 
-        let isBrowser = fixChrome && VietnameseAppDetector.isBrowserOrSearchApp(bundleID: bundleID)
-        let isLongReplacement = text.count > 8
-        let bsDelay: useconds_t = isLongReplacement ? 300 : 450
-        let chDelay: useconds_t = isLongReplacement ? 220 : 350
-
-        if backspaceCount > 0 && isBrowser {
-            // Cancel / collapse active browser Omnibox, Safari address bar, or Spotlight
-            // inline autocomplete prediction highlight by inserting a Zero-Width Non-Joiner (U+200C).
-            // This replaces the highlighted suggestion without deleting the user's typed stem.
+        if backspaceCount > 0 && needsOmniboxFix {
+            // Collapse active Omnibox / Spotlight inline autocomplete highlight using U+202F
+            // (Narrow No-Break Space, Grapheme_Cluster_Break=Other — NEVER fuses with the preceding
+            // character into a grapheme cluster like U+200C ZWNJ does).
+            var nbsp: UniChar = 0x202F
             if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
                 down.flags = []
-                down.timestamp = mach_absolute_time()
+                down.timestamp = nextMonotonicTimestamp()
                 down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                var zwnj: [UniChar] = [0x200C]
-                down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &zwnj)
+                down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
                 down.tapPostEvent(proxy)
             }
-            usleep(350)
             if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
                 up.flags = []
-                up.timestamp = mach_absolute_time()
+                up.timestamp = nextMonotonicTimestamp()
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                var zwnj: [UniChar] = [0x200C]
-                up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &zwnj)
+                up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
                 up.tapPostEvent(proxy)
             }
-            usleep(350)
         }
 
-        let totalBackspaces = (backspaceCount > 0 && isBrowser) ? (backspaceCount + 1) : backspaceCount
+        let totalBackspaces = (backspaceCount > 0 && needsOmniboxFix) ? (backspaceCount + 1) : backspaceCount
 
-        // Inject backspaces with paced inter-event intervals and strictly monotonic timestamps
-        // so Chromium/Electron/WebKit DOM input loops cleanly process each deletion without dropping events.
         if totalBackspaces > 0 {
             for _ in 0..<totalBackspaces {
                 if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) {
                     down.flags = []
-                    down.timestamp = mach_absolute_time()
+                    down.timestamp = nextMonotonicTimestamp()
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     down.tapPostEvent(proxy)
                 }
-                usleep(bsDelay)
                 if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
                     up.flags = []
-                    up.timestamp = mach_absolute_time()
+                    up.timestamp = nextMonotonicTimestamp()
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
                 }
-                usleep(bsDelay)
             }
         }
 
-        // Inject replacement characters one character at a time (never pack multiple Unicode
-        // characters into a single key event, which causes Chromium Omnibox and native NSTextViews
-        // to drop subsequent characters or fail composition).
         if !text.isEmpty {
             for ch in text {
                 var utf16 = Array(String(ch).utf16)
                 if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
                     down.flags = []
-                    down.timestamp = mach_absolute_time()
+                    down.timestamp = nextMonotonicTimestamp()
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                     down.tapPostEvent(proxy)
                 }
-                usleep(chDelay)
                 if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
                     up.flags = []
-                    up.timestamp = mach_absolute_time()
+                    up.timestamp = nextMonotonicTimestamp()
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                     up.tapPostEvent(proxy)
                 }
-                usleep(chDelay)
             }
         }
     }
