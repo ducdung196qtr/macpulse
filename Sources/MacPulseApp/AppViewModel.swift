@@ -165,8 +165,13 @@ public final class AppViewModel: ObservableObject {
     }
     @Published public var autoOptimizeLastRunAt: Date?
     @Published public var autoOptimizeLifetimeFreedBytes: UInt64 = 0
+    @Published public var autoOptimizeLifetimeReclaimedRAMBytes: UInt64 = 0
+    @Published public var autoOptimizeTotalIdleAppsClosed: Int = 0
     @Published public var autoOptimizeHistory: [AutoOptimizeRunRecord] = []
     @Published public var isAutoOptimizing: Bool = false
+    @Published public var trackedGUIApps: [TrackedGUIApp] = []
+    private var appLastActiveAt: [String: Date] = [:]
+    private var lastTrackedFrontmostBid: String = ""
 
     // MARK: - Browser Tabs Inspector State
     @Published public var openBrowserTabs: [BrowserTabItem] = []
@@ -244,7 +249,20 @@ public final class AppViewModel: ObservableObject {
         self.autoOptimizeConfig = loadedAutoOpt.config
         self.autoOptimizeLastRunAt = loadedAutoOpt.lastRunAt
         self.autoOptimizeLifetimeFreedBytes = loadedAutoOpt.totalLifetimeFreedBytes
+        self.autoOptimizeLifetimeReclaimedRAMBytes = loadedAutoOpt.totalLifetimeReclaimedRAMBytes
+        self.autoOptimizeTotalIdleAppsClosed = loadedAutoOpt.totalIdleAppsClosed
         self.autoOptimizeHistory = loadedAutoOpt.history
+
+        // Seed initial activity timestamps for all open GUI apps so nothing gets auto-closed right after launch
+        let launchNow = Date()
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            if let bid = app.bundleIdentifier, !bid.isEmpty {
+                self.appLastActiveAt[bid] = launchNow
+                if app.isActive {
+                    self.lastTrackedFrontmostBid = bid
+                }
+            }
+        }
 
         let loadedOpenCode = openCodeStore.load()
         if !FileManager.default.fileExists(atPath: openCodeStore.fileURL.path) {
@@ -369,6 +387,7 @@ public final class AppViewModel: ObservableObject {
             launchAtLoginEnabled = (SMAppService.mainApp.status == .enabled)
             inputTapService.checkAccessibilityStatusNow()
             refreshIMEEnvironment()
+            refreshTrackedGUIApps()
             refreshNow(includeProcesses: true)
             if aiSnapshot == nil || Date().timeIntervalSince(aiSnapshot?.timestamp ?? .distantPast) > 90 {
                 refreshAIQuota()
@@ -415,16 +434,42 @@ public final class AppViewModel: ObservableObject {
 
     private func wireEnvironmentObservers() {
         let nc = NSWorkspace.shared.notificationCenter
-        let launchObs = nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+        let launchObs = nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let launchedBid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
             Task { @MainActor [weak self] in
-                self?.refreshIMEEnvironment()
+                guard let self else { return }
+                if let bid = launchedBid, !bid.isEmpty {
+                    self.appLastActiveAt[bid] = Date()
+                }
+                self.refreshIMEEnvironment()
+                self.refreshTrackedGUIApps()
             }
         }
-        let termObs = nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+        let activateObs = nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let activeBid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
             Task { @MainActor [weak self] in
-                self?.refreshIMEEnvironment()
-                if self?.isPopoverVisible == true {
-                    self?.refreshNow(includeProcesses: true)
+                guard let self else { return }
+                let now = Date()
+                if !self.lastTrackedFrontmostBid.isEmpty {
+                    self.appLastActiveAt[self.lastTrackedFrontmostBid] = now
+                }
+                if let bid = activeBid, !bid.isEmpty {
+                    self.appLastActiveAt[bid] = now
+                    self.lastTrackedFrontmostBid = bid
+                }
+            }
+        }
+        let termObs = nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let termBid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let bid = termBid {
+                    self.appLastActiveAt.removeValue(forKey: bid)
+                }
+                self.refreshIMEEnvironment()
+                self.refreshTrackedGUIApps()
+                if self.isPopoverVisible {
+                    self.refreshNow(includeProcesses: true)
                 }
             }
         }
@@ -435,7 +480,7 @@ public final class AppViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshIMEEnvironment() }
         }
-        workspaceObservers = [launchObs, termObs]
+        workspaceObservers = [launchObs, activateObs, termObs]
         distObservers = [tisObs]
     }
 
@@ -715,6 +760,7 @@ public final class AppViewModel: ObservableObject {
                     self.processGroups = finalGroups
                     self.rawProcesses = finalRaw
                     self.lastProcessScanDate = Date()
+                    self.refreshTrackedGUIApps()
                 }
                 if let report { self.healthReport = report }
                 self.lastUpdated = Date()
@@ -770,20 +816,156 @@ public final class AppViewModel: ObservableObject {
         benchmarkHistory.count >= 2 ? benchmarkHistory[1] : nil
     }
 
-    // MARK: - Autopilot Auto-Optimizer (Zero-Lag Background Sweeper)
+    // MARK: - Autopilot Auto-Optimizer (Zero-Lag Background Sweeper + Idle App Auto-Sleeper)
     private func persistAutoOptimizeState() {
         let state = PersistedAutoOptimizeState(
             config: autoOptimizeConfig,
             lastRunAt: autoOptimizeLastRunAt,
             totalLifetimeFreedBytes: autoOptimizeLifetimeFreedBytes,
+            totalLifetimeReclaimedRAMBytes: autoOptimizeLifetimeReclaimedRAMBytes,
+            totalIdleAppsClosed: autoOptimizeTotalIdleAppsClosed,
             history: Array(autoOptimizeHistory.prefix(20))
         )
         try? autoOptStore.save(state)
     }
 
+    public func refreshTrackedGUIApps() {
+        let now = Date()
+        let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
+        var groupByBid: [String: ProcessGroupSummary] = [:]
+        var groupByName: [String: ProcessGroupSummary] = [:]
+        for g in processGroups {
+            if let bid = g.bundleIdentifier, !bid.isEmpty {
+                groupByBid[bid] = g
+            }
+            groupByName[g.displayName.lowercased()] = g
+        }
+
+        var list: [TrackedGUIApp] = []
+        var seenBids = Set<String>()
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            guard let bid = app.bundleIdentifier, !bid.isEmpty, bid != selfBid else { continue }
+            guard seenBids.insert(bid).inserted else { continue }
+            let name = app.localizedName ?? bid
+            let isFront = app.isActive
+            if isFront {
+                appLastActiveAt[bid] = now
+            } else if appLastActiveAt[bid] == nil {
+                appLastActiveAt[bid] = now
+            }
+            let lastActive = appLastActiveAt[bid] ?? now
+            let matchedGroup = groupByBid[bid] ?? groupByName[name.lowercased()]
+            list.append(TrackedGUIApp(
+                bundleID: bid,
+                name: name,
+                pid: app.processIdentifier,
+                isFrontmost: isFront,
+                lastActiveAt: lastActive,
+                rssBytes: matchedGroup?.totalRSSBytes ?? 0,
+                cpuPercent: matchedGroup?.totalCPUPercent ?? 0
+            ))
+        }
+
+        // Sort: non-protected idle candidates first (longest idle / highest RAM), then protected apps
+        trackedGUIApps = list.sorted { lhs, rhs in
+            let lProt = AutoOptimizerEngine.isProtectedWorkApp(bundleID: lhs.bundleID, appName: lhs.name, config: autoOptimizeConfig)
+            let rProt = AutoOptimizerEngine.isProtectedWorkApp(bundleID: rhs.bundleID, appName: rhs.name, config: autoOptimizeConfig)
+            if lProt != rProt { return !lProt }
+            let lIdle = lhs.idleMinutes(relativeTo: now)
+            let rIdle = rhs.idleMinutes(relativeTo: now)
+            if lIdle != rIdle { return lIdle > rIdle }
+            return lhs.rssBytes > rhs.rssBytes
+        }
+    }
+
+    public func isAppWorkProtected(_ app: TrackedGUIApp) -> Bool {
+        AutoOptimizerEngine.isProtectedWorkApp(bundleID: app.bundleID, appName: app.name, config: autoOptimizeConfig)
+    }
+
+    public func toggleAppWorkProtection(bundleID: String) {
+        guard !bundleID.isEmpty, bundleID != "com.ducdung.MacPulse", bundleID != "com.apple.finder" else { return }
+        var cfg = autoOptimizeConfig
+        let currentlyProtected = AutoOptimizerEngine.isProtectedWorkApp(bundleID: bundleID, config: cfg)
+        if currentlyProtected {
+            cfg.customProtectedBundleIDs.removeAll { $0 == bundleID }
+            if !cfg.unlockedDefaultBundleIDs.contains(bundleID) {
+                cfg.unlockedDefaultBundleIDs.append(bundleID)
+            }
+        } else {
+            cfg.unlockedDefaultBundleIDs.removeAll { $0 == bundleID }
+            if !cfg.customProtectedBundleIDs.contains(bundleID) {
+                cfg.customProtectedBundleIDs.append(bundleID)
+            }
+        }
+        autoOptimizeConfig = cfg
+        refreshTrackedGUIApps()
+    }
+
+    public var eligibleIdleAppsNow: [TrackedGUIApp] {
+        AutoOptimizerEngine.selectIdleAppsToClose(runningApps: trackedGUIApps, config: autoOptimizeConfig)
+    }
+
+    /// Politely sends Cmd+Q (`terminate()`) to eligible idle, non-protected apps (CPU < 2%, idle >= timeout).
+    /// NEVER uses forceTerminate so unsaved documents prompt to save instead of losing work.
+    private func politelyCloseEligibleIdleApps() -> (names: [String], reclaimedRAMBytes: UInt64) {
+        refreshTrackedGUIApps()
+        let eligible = AutoOptimizerEngine.selectIdleAppsToClose(
+            runningApps: trackedGUIApps,
+            config: autoOptimizeConfig
+        )
+        guard !eligible.isEmpty else { return ([], 0) }
+
+        var closedNames: [String] = []
+        var reclaimedRAM: UInt64 = 0
+        for item in eligible {
+            let instances = NSRunningApplication.runningApplications(withBundleIdentifier: item.bundleID)
+            var requestedQuit = false
+            for app in instances where !app.isActive {
+                if app.terminate() {
+                    requestedQuit = true
+                }
+            }
+            if requestedQuit {
+                closedNames.append(item.name)
+                reclaimedRAM += item.rssBytes
+            }
+        }
+        return (closedNames, reclaimedRAM)
+    }
+
+    public func closeIdleAppsNow() {
+        let res = politelyCloseEligibleIdleApps()
+        if res.names.isEmpty {
+            showNotice("Không có ứng dụng rảnh nào (quá \(autoOptimizeConfig.idleAppTimeoutMinutes)p & CPU < 2%) cần đóng.", kind: .info)
+            return
+        }
+        autoOptimizeLifetimeReclaimedRAMBytes += res.reclaimedRAMBytes
+        autoOptimizeTotalIdleAppsClosed += res.names.count
+        let rec = AutoOptimizeRunRecord(
+            trigger: .manual,
+            freedBytes: 0,
+            removedFilesCount: 0,
+            truncatedLogsCount: 0,
+            cleanedOrphanProfilesCount: 0,
+            closedIdleApps: res.names,
+            reclaimedRAMBytes: res.reclaimedRAMBytes,
+            throttledBackgroundCount: 0,
+            summary: "Tắt êm \(res.names.joined(separator: ", ")) (~\(Formatters.bytes(res.reclaimedRAMBytes)) RAM)"
+        )
+        autoOptimizeHistory.insert(rec, at: 0)
+        if autoOptimizeHistory.count > 20 {
+            autoOptimizeHistory = Array(autoOptimizeHistory.prefix(20))
+        }
+        persistAutoOptimizeState()
+        let msg = "Đã đóng êm \(res.names.count) app rảnh (\(res.names.joined(separator: ", "))) — thu hồi ~\(Formatters.bytes(res.reclaimedRAMBytes)) RAM!"
+        cleanupOutcomeMessage = msg
+        showNotice(msg, kind: .success)
+        refreshAfterDelay()
+    }
+
     private func startAutoOptimizeScheduler() {
         autoOptimizeTimer?.invalidate()
-        autoOptimizeTimer = Timer.scheduledTimer(withTimeInterval: 600.0, repeats: true) { [weak self] _ in
+        autoOptimizeTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.checkAndRunAutoOptimizeIfNeeded()
             }
@@ -795,11 +977,13 @@ public final class AppViewModel: ObservableObject {
         guard let snap = snapshot else { return }
         let availableGB = Double(snap.disk.availableBytes) / 1_073_741_824.0
         let cpuBusy = snap.cpu.totalBusyPercent
+        let compressedGB = snap.memory.compressedGB
         guard let trigger = AutoOptimizerEngine.evaluateTrigger(
             config: autoOptimizeConfig,
             lastRunAt: autoOptimizeLastRunAt,
             availableDiskGB: availableGB,
-            cpuBusyPercent: cpuBusy
+            cpuBusyPercent: cpuBusy,
+            compressedRAMGB: compressedGB
         ) else { return }
         executeAutoOptimize(trigger: trigger, priority: .background, announceIfZero: false)
     }
@@ -812,14 +996,28 @@ public final class AppViewModel: ObservableObject {
     private func executeAutoOptimize(trigger: AutoOptimizeTrigger, priority: TaskPriority, announceIfZero: Bool) {
         isAutoOptimizing = true
         let cfg = autoOptimizeConfig
+        let idleResult: (names: [String], reclaimedRAMBytes: UInt64) = cfg.autoCloseIdleApps
+            ? politelyCloseEligibleIdleApps()
+            : ([], 0)
+
         Task.detached(priority: priority) { [cleanupScanner, autoOptStore] in
-            let record = AutoOptimizerEngine.runPass(config: cfg, trigger: trigger)
+            let record = AutoOptimizerEngine.runPass(
+                config: cfg,
+                trigger: trigger,
+                closedIdleAppNames: idleResult.names,
+                reclaimedRAMBytes: idleResult.reclaimedRAMBytes
+            )
+            let didOptimizeAnything = record.freedBytes > 0
+                || !record.closedIdleApps.isEmpty
+                || record.throttledBackgroundCount > 0
             let shouldRescan = record.freedBytes > 0 || trigger == .manual
             let rescanned: [CleanupCandidate]? = shouldRescan ? cleanupScanner.scan() : nil
 
             await MainActor.run {
                 self.autoOptimizeLastRunAt = record.timestamp
                 self.autoOptimizeLifetimeFreedBytes += record.freedBytes
+                self.autoOptimizeLifetimeReclaimedRAMBytes += record.reclaimedRAMBytes
+                self.autoOptimizeTotalIdleAppsClosed += record.closedIdleApps.count
                 self.autoOptimizeHistory.insert(record, at: 0)
                 if self.autoOptimizeHistory.count > 20 {
                     self.autoOptimizeHistory = Array(self.autoOptimizeHistory.prefix(20))
@@ -829,6 +1027,8 @@ public final class AppViewModel: ObservableObject {
                     config: self.autoOptimizeConfig,
                     lastRunAt: self.autoOptimizeLastRunAt,
                     totalLifetimeFreedBytes: self.autoOptimizeLifetimeFreedBytes,
+                    totalLifetimeReclaimedRAMBytes: self.autoOptimizeLifetimeReclaimedRAMBytes,
+                    totalIdleAppsClosed: self.autoOptimizeTotalIdleAppsClosed,
                     history: self.autoOptimizeHistory
                 )
                 try? autoOptStore.save(state)
@@ -841,11 +1041,11 @@ public final class AppViewModel: ObservableObject {
 
                 self.isAutoOptimizing = false
 
-                if record.freedBytes > 0 {
+                if didOptimizeAnything {
                     let msg = "Autopilot (\(trigger.rawValue)): \(record.summary)"
                     self.cleanupOutcomeMessage = msg
                     self.showNotice(msg, kind: .success)
-                    self.refreshNow(includeProcesses: false)
+                    self.refreshNow(includeProcesses: !record.closedIdleApps.isEmpty)
                 } else if announceIfZero {
                     let msg = "Autopilot: \(record.summary)"
                     self.cleanupOutcomeMessage = msg

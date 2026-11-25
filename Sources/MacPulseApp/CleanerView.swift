@@ -159,7 +159,8 @@ struct CleanerView: View {
     private var autopilotOptimizerCard: some View {
         let enabled = vm.autoOptimizeConfig.isEnabled
         let cardAccent: Color = vm.isAutoOptimizing ? HudTheme.cyan : (enabled ? HudTheme.emerald : HudTheme.textMuted)
-        let statusText: String = vm.isAutoOptimizing ? "OPTIMIZING" : (enabled ? "ONLINE" : "STANDBY")
+        let statusText: String = vm.isAutoOptimizing ? "BOOSTING" : (enabled ? "ONLINE" : "STANDBY")
+        let eligibleIdle = vm.eligibleIdleAppsNow
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 9) {
@@ -175,7 +176,7 @@ struct CleanerView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text("AUTOPILOT TỰ ĐỘNG TỐI ƯU")
+                        Text("AUTOPILOT TĂNG TỐC & TỰ DỌN")
                             .font(.system(size: 11, weight: .black, design: .monospaced))
                             .foregroundStyle(HudTheme.textPrimary)
 
@@ -186,8 +187,8 @@ struct CleanerView: View {
                             .background(cardAccent.opacity(0.20), in: Capsule())
                             .foregroundStyle(cardAccent)
                     }
-                    Text("Tự dọn ngầm cache cũ >\(vm.autoOptimizeConfig.staleCacheDays) ngày, rác ShipIt, log phình & bot /tmp mồ côi.")
-                        .font(.system(size: 10))
+                    Text("Quét mỗi \(vm.autoOptimizeConfig.intervalHours)h • Cache >\(vm.autoOptimizeConfig.staleCacheDays)d • Tắt app rảnh >\(vm.autoOptimizeConfig.idleAppTimeoutMinutes)p • Hạ ưu tiên nền.")
+                        .font(.system(size: 9.5))
                         .foregroundStyle(HudTheme.textSecondary)
                         .lineLimit(1)
                 }
@@ -219,14 +220,16 @@ struct CleanerView: View {
             // Compact 3-cell HUD Telemetry Row
             HStack(spacing: 7) {
                 autopilotMetricCell(
-                    label: "ĐÃ TỰ DỌN",
+                    label: "ĐÃ TỰ DỌN SSD",
                     value: Formatters.bytes(vm.autoOptimizeLifetimeFreedBytes),
                     accent: HudTheme.emerald
                 )
                 autopilotMetricCell(
-                    label: "LẦN GẦN NHẤT",
-                    value: vm.autoOptimizeLastRunLabel,
-                    accent: HudTheme.cyan
+                    label: "APP RẢNH / RAM",
+                    value: vm.autoOptimizeTotalIdleAppsClosed > 0
+                        ? "\(vm.autoOptimizeTotalIdleAppsClosed) app • \(Formatters.bytes(vm.autoOptimizeLifetimeReclaimedRAMBytes))"
+                        : "\(eligibleIdle.count) sẵn sàng",
+                    accent: eligibleIdle.isEmpty ? HudTheme.cyan : HudTheme.amber
                 )
                 autopilotMetricCell(
                     label: "LỊCH KẾ TIẾP",
@@ -238,8 +241,8 @@ struct CleanerView: View {
             // Action Bar
             HStack(spacing: 7) {
                 HudButton(
-                    title: vm.isAutoOptimizing ? "Đang tối ưu..." : "Tối ưu ngay",
-                    icon: "sparkles",
+                    title: vm.isAutoOptimizing ? "Đang tăng tốc..." : "Turbo Boost ngay",
+                    icon: "bolt.fill",
                     color: HudTheme.emerald,
                     filled: true,
                     compact: true,
@@ -248,13 +251,26 @@ struct CleanerView: View {
                     vm.runAutoOptimizeNow()
                 }
 
+                if !eligibleIdle.isEmpty {
+                    HudButton(
+                        title: "Tắt \(eligibleIdle.count) app rảnh",
+                        icon: "moon.zzz.fill",
+                        color: HudTheme.amber,
+                        filled: false,
+                        compact: true
+                    ) {
+                        vm.closeIdleAppsNow()
+                    }
+                }
+
                 HudButton(
-                    title: isAutopilotSettingsExpanded ? "Ẩn cài đặt" : "Cấu hình & Lịch sử",
+                    title: isAutopilotSettingsExpanded ? "Ẩn cài đặt" : "Cấu hình & App rảnh",
                     icon: isAutopilotSettingsExpanded ? "chevron.up" : "slider.horizontal.3",
                     color: HudTheme.cyan,
                     filled: false,
                     compact: true
                 ) {
+                    vm.refreshTrackedGUIApps()
                     withAnimation(.easeInOut(duration: 0.18)) {
                         isAutopilotSettingsExpanded.toggle()
                     }
@@ -262,7 +278,7 @@ struct CleanerView: View {
 
                 Spacer()
 
-                Text("\(vm.autoOptimizeConfig.intervalHours)H • >\(vm.autoOptimizeConfig.staleCacheDays)D • <\(Int(vm.autoOptimizeConfig.lowDiskTriggerGB))G")
+                Text("\(vm.autoOptimizeConfig.intervalHours)H • >\(vm.autoOptimizeConfig.staleCacheDays)D")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(HudTheme.textMuted)
             }
@@ -301,16 +317,22 @@ struct CleanerView: View {
             // Parameter Selectors
             VStack(alignment: .leading, spacing: 6) {
                 autopilotIntSelector(
+                    title: "Chu kỳ quét tự động",
+                    options: [(1, "1 giờ"), (2, "2 giờ"), (6, "6 giờ"), (12, "12 giờ"), (24, "24 giờ")],
+                    selection: $vm.autoOptimizeConfig.intervalHours,
+                    accent: HudTheme.cyan
+                )
+                autopilotIntSelector(
                     title: "Xoá cache cũ hơn",
-                    options: [(3, "3 ngày"), (7, "7 ngày"), (14, "14 ngày")],
+                    options: [(1, "1 ngày"), (3, "3 ngày"), (7, "7 ngày"), (14, "14 ngày")],
                     selection: $vm.autoOptimizeConfig.staleCacheDays,
                     accent: HudTheme.emerald
                 )
                 autopilotIntSelector(
-                    title: "Chu kỳ quét tự động",
-                    options: [(2, "2 giờ"), (6, "6 giờ"), (12, "12 giờ"), (24, "24 giờ")],
-                    selection: $vm.autoOptimizeConfig.intervalHours,
-                    accent: HudTheme.cyan
+                    title: "Tự tắt app rảnh sau",
+                    options: [(30, "30p"), (60, "1 giờ"), (120, "2 giờ"), (240, "4 giờ")],
+                    selection: $vm.autoOptimizeConfig.idleAppTimeoutMinutes,
+                    accent: HudTheme.violet
                 )
                 autopilotDoubleSelector(
                     title: "Tự kích hoạt khi SSD <",
@@ -323,8 +345,20 @@ struct CleanerView: View {
             .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
 
-            // 4 Granular Rule Switches
+            // 6 Granular Rule Switches
             VStack(spacing: 7) {
+                HudToggleRow(
+                    title: "Tự đóng êm ứng dụng lâu không dùng (Cmd+Q an toàn)",
+                    subtitle: "Chỉ đóng khi không dùng ≥ \(vm.autoOptimizeConfig.idleAppTimeoutMinutes)p & CPU < 2%. Tự bảo vệ công việc & không ép tắt file chưa lưu.",
+                    isOn: $vm.autoOptimizeConfig.autoCloseIdleApps,
+                    accent: HudTheme.violet
+                )
+                HudToggleRow(
+                    title: "Hạ ưu tiên tiến trình nền ngốn CPU (Spotlight / Photos / iCloud)",
+                    subtitle: "Đặt nice +10 cho tác vụ chỉ mục/đồng bộ chạy nền ≥ 5% CPU để thao tác luôn mượt (không tắt app).",
+                    isOn: $vm.autoOptimizeConfig.autoThrottleBackgroundHogs,
+                    accent: HudTheme.cyan
+                )
                 HudToggleRow(
                     title: "Dọn cache cũ quá hạn (Trình duyệt, AI, Dev)",
                     subtitle: "Chỉ xoá tệp không dùng quá \(vm.autoOptimizeConfig.staleCacheDays) ngày trong ~/Library/Caches & .npm/.cache.",
@@ -333,7 +367,7 @@ struct CleanerView: View {
                 )
                 HudToggleRow(
                     title: "Dọn rác cập nhật ShipIt, OpenMausBot & QuickLook",
-                    subtitle: "Tự dọn bản vá/update cũ (>24h) và bộ đệm ảnh xem nhanh Finder.",
+                    subtitle: "Tự dọn bản vá/update cũ và bộ đệm ảnh xem nhanh Finder.",
                     isOn: $vm.autoOptimizeConfig.autoCleanUpdaterGarbage,
                     accent: HudTheme.emerald
                 )
@@ -354,12 +388,17 @@ struct CleanerView: View {
             .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
 
+            // Interactive Idle App & Work-Safety Whitelist Matrix
+            if !vm.trackedGUIApps.isEmpty {
+                idleAppsProtectionSection
+            }
+
             // Safety Guardrail Banner
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.shield.fill")
                     .foregroundStyle(HudTheme.emerald)
                     .font(.caption)
-                Text("Chạy ở độ ưu tiên nền thấp nhất, tự hoãn khi CPU ≥ 65% (nghỉ tối thiểu 60p). Tuyệt đối KHÔNG đụng Chrome đang mở, Extension, Cookies, Thùng rác, Xcode DerivedData hay model AI.")
+                Text("Bảo vệ tuyệt đối công việc: Tự hoãn khi CPU ≥ 65%. Mặc định khoá bảo vệ Chrome, Warp, Terminal, Antigravity, LocalWP, OpenMausBot, Slack, Telegram, Zalo & Remote/VPS. Chỉ gửi Cmd+Q lịch sự (không ép tắt mất file).")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(HudTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -386,6 +425,95 @@ struct CleanerView: View {
         }
     }
 
+    private var idleAppsProtectionSection: some View {
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("ỨNG DỤNG ĐANG MỞ & BẢO VỆ CÔNG VIỆC")
+                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                    .tracking(0.6)
+                    .foregroundStyle(HudTheme.violet)
+                Spacer()
+                Text("Bấm nút khiên để khoá/mở tự tắt")
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(HudTheme.textMuted)
+            }
+
+            LazyVStack(spacing: 4) {
+                ForEach(vm.trackedGUIApps.prefix(10)) { app in
+                    idleAppRow(app, now: now)
+                }
+            }
+        }
+        .padding(8)
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.violet.opacity(0.28), lineWidth: 0.7))
+    }
+
+    private func idleAppRow(_ app: TrackedGUIApp, now: Date) -> some View {
+        let isProtected = vm.isAppWorkProtected(app)
+        let idleMins = app.idleMinutes(relativeTo: now)
+        let isSystemLocked = (app.bundleID == "com.apple.finder" || app.bundleID == "com.ducdung.MacPulse")
+        let isEligible = !isProtected && !app.isFrontmost && app.cpuPercent < 2.0 && idleMins >= vm.autoOptimizeConfig.idleAppTimeoutMinutes
+
+        let idleText: String
+        if app.isFrontmost {
+            idleText = "Đang dùng"
+        } else if idleMins == 0 {
+            idleText = "Vừa dùng"
+        } else if idleMins >= 60 {
+            idleText = "Rảnh \(idleMins / 60)h \(idleMins % 60)p"
+        } else {
+            idleText = "Rảnh \(idleMins)p"
+        }
+
+        return HStack(spacing: 7) {
+            Circle()
+                .fill(isEligible ? HudTheme.amber : (isProtected ? HudTheme.emerald : HudTheme.cyan))
+                .frame(width: 5.5, height: 5.5)
+
+            Text(app.name)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(HudTheme.textPrimary)
+                .lineLimit(1)
+
+            Text(idleText)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(isEligible ? HudTheme.amber : HudTheme.textMuted)
+
+            Spacer(minLength: 4)
+
+            if app.rssBytes > 0 {
+                Text(Formatters.bytes(app.rssBytes))
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
+            }
+
+            Button {
+                vm.toggleAppWorkProtection(bundleID: app.bundleID)
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: isProtected ? "lock.shield.fill" : "moon.zzz.fill")
+                        .font(.system(size: 8.5, weight: .bold))
+                    Text(isProtected ? "Bảo vệ" : "Tự tắt")
+                        .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background((isProtected ? HudTheme.emerald : HudTheme.violet).opacity(0.18), in: Capsule())
+                .overlay(Capsule().strokeBorder((isProtected ? HudTheme.emerald : HudTheme.violet).opacity(0.55), lineWidth: 0.65))
+                .foregroundStyle(isProtected ? HudTheme.emerald : HudTheme.violet)
+            }
+            .buttonStyle(.plain)
+            .disabled(isSystemLocked)
+            .opacity(isSystemLocked ? 0.55 : 1.0)
+            .help(isProtected ? "Đang bảo vệ (không bao giờ tự tắt) — bấm để cho phép tự tắt khi rảnh" : "Cho phép tự tắt êm khi rảnh — bấm để khoá bảo vệ công việc")
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4.5)
+        .background(HudTheme.cardBg.opacity(0.7), in: RoundedRectangle(cornerRadius: 5))
+    }
+
     private func autopilotIntSelector(
         title: String,
         options: [(Int, String)],
@@ -405,7 +533,7 @@ struct CleanerView: View {
                     } label: {
                         Text(label)
                             .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 6.5)
                             .padding(.vertical, 3)
                             .background(active ? accent.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
                             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? accent.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
@@ -436,7 +564,7 @@ struct CleanerView: View {
                     } label: {
                         Text(label)
                             .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 6.5)
                             .padding(.vertical, 3)
                             .background(active ? accent.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
                             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? accent.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
@@ -449,7 +577,12 @@ struct CleanerView: View {
     }
 
     private func autopilotHistoryRow(_ rec: AutoOptimizeRunRecord) -> some View {
-        let badgeColor: Color = rec.trigger == .lowDisk ? HudTheme.amber : (rec.trigger == .manual ? HudTheme.cyan : HudTheme.emerald)
+        let badgeColor: Color
+        switch rec.trigger {
+        case .lowDisk, .ramPressure: badgeColor = HudTheme.amber
+        case .manual: badgeColor = HudTheme.cyan
+        case .scheduled: badgeColor = HudTheme.emerald
+        }
         return HStack(spacing: 6) {
             Text(rec.trigger.rawValue.uppercased())
                 .font(.system(size: 7.5, weight: .black, design: .monospaced))
@@ -464,7 +597,7 @@ struct CleanerView: View {
 
             Text(rec.summary)
                 .font(.system(size: 9.5))
-                .foregroundStyle(rec.freedBytes > 0 ? HudTheme.textPrimary : HudTheme.textSecondary)
+                .foregroundStyle((rec.freedBytes > 0 || !rec.closedIdleApps.isEmpty || rec.throttledBackgroundCount > 0) ? HudTheme.textPrimary : HudTheme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
 

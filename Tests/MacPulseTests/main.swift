@@ -1631,6 +1631,64 @@ suite.test("v2.0: OpenCodeMonitorStore persists config and recent alert history"
     try expectEqual(loaded.recentAlerts.first?.projectName, "somnia")
 }
 
+suite.test("v2.0: AutoOptimizer 1-hour schedule, RAM pressure trigger, and work-safe idle app selection") {
+    let now = Date()
+    let cfg1h = AutoOptimizeConfig(
+        isEnabled: true,
+        intervalHours: 1,
+        staleCacheDays: 1,
+        lowDiskTriggerGB: 30.0,
+        autoCloseIdleApps: true,
+        idleAppTimeoutMinutes: 60,
+        autoThrottleBackgroundHogs: true
+    )
+
+    // 1. 1-hour scheduled trigger fires at 60m (3600s) and NOT at 40m (2400s)
+    try expect(AutoOptimizerEngine.evaluateTrigger(config: cfg1h, lastRunAt: now.addingTimeInterval(-2400), availableDiskGB: 80.0, cpuBusyPercent: 20.0, compressedRAMGB: 2.0, now: now) == nil, "40m should not trigger 1h schedule")
+    try expectEqual(AutoOptimizerEngine.evaluateTrigger(config: cfg1h, lastRunAt: now.addingTimeInterval(-3600), availableDiskGB: 80.0, cpuBusyPercent: 20.0, compressedRAMGB: 2.0, now: now), .scheduled)
+
+    // 2. RAM pressure trigger fires at 35m (2100s >= 30m) when compressedRAMGB >= 5.0
+    try expectEqual(AutoOptimizerEngine.evaluateTrigger(config: cfg1h, lastRunAt: now.addingTimeInterval(-2100), availableDiskGB: 80.0, cpuBusyPercent: 20.0, compressedRAMGB: 5.5, now: now), .ramPressure)
+
+    // 3. Work-safe Idle App Selection
+    let apps = [
+        // Protected work apps -> MUST NEVER be selected even after 3 hours idle
+        TrackedGUIApp(bundleID: "com.google.Chrome", name: "Google Chrome", pid: 10, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-3 * 3600), rssBytes: 900_000_000, cpuPercent: 0.2),
+        TrackedGUIApp(bundleID: "dev.warp.Warp-Stable", name: "Warp", pid: 11, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-3 * 3600), rssBytes: 200_000_000, cpuPercent: 0.1),
+        TrackedGUIApp(bundleID: "com.getflywheel.lightning.local", name: "Local", pid: 12, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-3 * 3600), rssBytes: 300_000_000, cpuPercent: 0.0),
+        TrackedGUIApp(bundleID: "com.microsoft.rdc.macos", name: "Windows App", pid: 13, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-3 * 3600), rssBytes: 250_000_000, cpuPercent: 0.0),
+        // Non-protected app actively working (CPU 8.5%) -> MUST NOT be closed!
+        TrackedGUIApp(bundleID: "com.apple.Preview", name: "Preview", pid: 14, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-2 * 3600), rssBytes: 180_000_000, cpuPercent: 8.5),
+        // Non-protected app frontmost -> MUST NOT be closed!
+        TrackedGUIApp(bundleID: "com.apple.Notes", name: "Notes", pid: 15, isFrontmost: true, lastActiveAt: now.addingTimeInterval(-2 * 3600), rssBytes: 120_000_000, cpuPercent: 0.0),
+        // Non-protected app idle only 30 mins (< 60m) -> MUST NOT be closed!
+        TrackedGUIApp(bundleID: "com.apple.Music", name: "Music", pid: 16, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-1800), rssBytes: 150_000_000, cpuPercent: 0.0),
+        // Non-protected genuinely idle apps (> 60m, CPU < 2%) -> MUST be selected sorted by highest RAM!
+        TrackedGUIApp(bundleID: "com.brave.Browser", name: "Brave Browser", pid: 17, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-90 * 60), rssBytes: 420_000_000, cpuPercent: 0.3),
+        TrackedGUIApp(bundleID: "com.apple.Photos", name: "Photos", pid: 18, isFrontmost: false, lastActiveAt: now.addingTimeInterval(-120 * 60), rssBytes: 210_000_000, cpuPercent: 0.0)
+    ]
+
+    let selected = AutoOptimizerEngine.selectIdleAppsToClose(runningApps: apps, config: cfg1h, now: now)
+    try expectEqual(selected.count, 2)
+    try expectEqual(selected[0].bundleID, "com.brave.Browser")
+    try expectEqual(selected[1].bundleID, "com.apple.Photos")
+
+    // Custom protection lock protects Brave immediately
+    var customCfg = cfg1h
+    customCfg.customProtectedBundleIDs = ["com.brave.Browser"]
+    let afterLock = AutoOptimizerEngine.selectIdleAppsToClose(runningApps: apps, config: customCfg, now: now)
+    try expectEqual(afterLock.count, 1)
+    try expectEqual(afterLock[0].bundleID, "com.apple.Photos")
+
+    // Legacy JSON decoding backwards-compatibility
+    let legacyJSON = Data("{\"isEnabled\":true,\"intervalHours\":6,\"staleCacheDays\":7,\"lowDiskTriggerGB\":30}".utf8)
+    let decoded = try JSONDecoder().decode(AutoOptimizeConfig.self, from: legacyJSON)
+    try expectEqual(decoded.intervalHours, 6)
+    try expectEqual(decoded.autoCloseIdleApps, true)
+    try expectEqual(decoded.idleAppTimeoutMinutes, 60)
+    try expectEqual(decoded.autoThrottleBackgroundHogs, true)
+}
+
 suite.summaryAndExit()
 
 

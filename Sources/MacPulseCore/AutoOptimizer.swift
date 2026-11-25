@@ -1,25 +1,103 @@
 import Foundation
 import Darwin
 
+public struct TrackedGUIApp: Identifiable, Codable, Sendable, Equatable {
+    public let id: String          // bundleID
+    public let bundleID: String
+    public let name: String
+    public let pid: pid_t
+    public let isFrontmost: Bool
+    public let lastActiveAt: Date
+    public let rssBytes: UInt64
+    public let cpuPercent: Double
+
+    public init(
+        bundleID: String,
+        name: String,
+        pid: pid_t,
+        isFrontmost: Bool,
+        lastActiveAt: Date,
+        rssBytes: UInt64,
+        cpuPercent: Double
+    ) {
+        self.id = bundleID
+        self.bundleID = bundleID
+        self.name = name
+        self.pid = pid
+        self.isFrontmost = isFrontmost
+        self.lastActiveAt = lastActiveAt
+        self.rssBytes = rssBytes
+        self.cpuPercent = cpuPercent
+    }
+
+    public func idleMinutes(relativeTo now: Date = Date()) -> Int {
+        if isFrontmost { return 0 }
+        return max(0, Int(now.timeIntervalSince(lastActiveAt) / 60.0))
+    }
+}
+
 public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
     public var isEnabled: Bool
-    public var intervalHours: Int                  // 2, 6, 12, 24
-    public var staleCacheDays: Int                 // 3, 7, 14
+    public var intervalHours: Int                  // 1, 2, 6, 12, 24
+    public var staleCacheDays: Int                 // 1, 3, 7, 14
     public var lowDiskTriggerGB: Double            // 20, 30, 40
     public var autoCleanStaleCaches: Bool          // Browser + AI + Dev stale files > N days
-    public var autoCleanUpdaterGarbage: Bool       // ShipIt, openmausbot-updater, QuickLook (> 24h)
+    public var autoCleanUpdaterGarbage: Bool       // ShipIt, openmausbot-updater, QuickLook
     public var autoTruncateOversizedLogs: Bool     // LocalWP logs > 15 MB
     public var autoCleanOrphanTempProfiles: Bool   // Dead /tmp playwright/puppeteer/agent-browser dirs
+    public var autoCloseIdleApps: Bool             // Politely Cmd+Q unused background GUI apps
+    public var idleAppTimeoutMinutes: Int          // 30, 60, 120, 240
+    public var autoThrottleBackgroundHogs: Bool    // Politely nice +10 noisy Spotlight/iCloud/Photos indexers
+    public var customProtectedBundleIDs: [String]  // Extra apps user locked from auto-close
+    public var unlockedDefaultBundleIDs: [String]  // Default-protected apps user explicitly allowed to auto-close
+
+    /// Built-in Work-Safe apps that Autopilot NEVER auto-closes unless explicitly unlocked by the user.
+    public static let defaultProtectedBundleIDs: Set<String> = [
+        // Core macOS & MacPulse
+        "com.apple.finder",
+        "com.apple.systempreferences",
+        "com.apple.ActivityMonitor",
+        "com.apple.ScreenSharing",
+        "com.ducdung.MacPulse",
+        "com.skillbrains.lightshot",
+        // Terminals, IDEs & Dev Servers
+        "dev.warp.Warp-Stable",
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "com.google.antigravity",
+        "com.microsoft.VSCode",
+        "com.todesktop.230313mzl4w4u92", // Cursor
+        "com.apple.dt.Xcode",
+        "com.getflywheel.lightning.local", // LocalWP
+        "com.docker.docker",
+        "com.openmausbot.app",
+        "ai.opencode.desktop",
+        "com.opencode.app",
+        // Primary Browser
+        "com.google.Chrome",
+        // Active Work Communication
+        "com.tinyspeck.slackmacgap",
+        "ru.keepcoder.Telegram",
+        "org.telegram.desktop",
+        "com.vng.zalo",
+        "com.hnc.Discord",
+        "com.apple.MobileSMS"
+    ]
 
     public init(
         isEnabled: Bool = true,
-        intervalHours: Int = 6,
-        staleCacheDays: Int = 7,
+        intervalHours: Int = 1,
+        staleCacheDays: Int = 3,
         lowDiskTriggerGB: Double = 30.0,
         autoCleanStaleCaches: Bool = true,
         autoCleanUpdaterGarbage: Bool = true,
         autoTruncateOversizedLogs: Bool = true,
-        autoCleanOrphanTempProfiles: Bool = true
+        autoCleanOrphanTempProfiles: Bool = true,
+        autoCloseIdleApps: Bool = true,
+        idleAppTimeoutMinutes: Int = 60,
+        autoThrottleBackgroundHogs: Bool = true,
+        customProtectedBundleIDs: [String] = [],
+        unlockedDefaultBundleIDs: [String] = []
     ) {
         self.isEnabled = isEnabled
         self.intervalHours = intervalHours
@@ -29,12 +107,42 @@ public struct AutoOptimizeConfig: Codable, Sendable, Equatable {
         self.autoCleanUpdaterGarbage = autoCleanUpdaterGarbage
         self.autoTruncateOversizedLogs = autoTruncateOversizedLogs
         self.autoCleanOrphanTempProfiles = autoCleanOrphanTempProfiles
+        self.autoCloseIdleApps = autoCloseIdleApps
+        self.idleAppTimeoutMinutes = idleAppTimeoutMinutes
+        self.autoThrottleBackgroundHogs = autoThrottleBackgroundHogs
+        self.customProtectedBundleIDs = customProtectedBundleIDs
+        self.unlockedDefaultBundleIDs = unlockedDefaultBundleIDs
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled, intervalHours, staleCacheDays, lowDiskTriggerGB
+        case autoCleanStaleCaches, autoCleanUpdaterGarbage, autoTruncateOversizedLogs, autoCleanOrphanTempProfiles
+        case autoCloseIdleApps, idleAppTimeoutMinutes, autoThrottleBackgroundHogs
+        case customProtectedBundleIDs, unlockedDefaultBundleIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        self.intervalHours = try c.decodeIfPresent(Int.self, forKey: .intervalHours) ?? 1
+        self.staleCacheDays = try c.decodeIfPresent(Int.self, forKey: .staleCacheDays) ?? 3
+        self.lowDiskTriggerGB = try c.decodeIfPresent(Double.self, forKey: .lowDiskTriggerGB) ?? 30.0
+        self.autoCleanStaleCaches = try c.decodeIfPresent(Bool.self, forKey: .autoCleanStaleCaches) ?? true
+        self.autoCleanUpdaterGarbage = try c.decodeIfPresent(Bool.self, forKey: .autoCleanUpdaterGarbage) ?? true
+        self.autoTruncateOversizedLogs = try c.decodeIfPresent(Bool.self, forKey: .autoTruncateOversizedLogs) ?? true
+        self.autoCleanOrphanTempProfiles = try c.decodeIfPresent(Bool.self, forKey: .autoCleanOrphanTempProfiles) ?? true
+        self.autoCloseIdleApps = try c.decodeIfPresent(Bool.self, forKey: .autoCloseIdleApps) ?? true
+        self.idleAppTimeoutMinutes = try c.decodeIfPresent(Int.self, forKey: .idleAppTimeoutMinutes) ?? 60
+        self.autoThrottleBackgroundHogs = try c.decodeIfPresent(Bool.self, forKey: .autoThrottleBackgroundHogs) ?? true
+        self.customProtectedBundleIDs = try c.decodeIfPresent([String].self, forKey: .customProtectedBundleIDs) ?? []
+        self.unlockedDefaultBundleIDs = try c.decodeIfPresent([String].self, forKey: .unlockedDefaultBundleIDs) ?? []
     }
 }
 
 public enum AutoOptimizeTrigger: String, Codable, Sendable, Equatable {
     case scheduled = "Định kỳ"
     case lowDisk = "SSD thấp"
+    case ramPressure = "RAM đầy"
     case manual = "Thủ công"
 }
 
@@ -46,6 +154,9 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
     public let removedFilesCount: Int
     public let truncatedLogsCount: Int
     public let cleanedOrphanProfilesCount: Int
+    public let closedIdleApps: [String]
+    public let reclaimedRAMBytes: UInt64
+    public let throttledBackgroundCount: Int
     public let summary: String
 
     public init(
@@ -56,6 +167,9 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
         removedFilesCount: Int,
         truncatedLogsCount: Int,
         cleanedOrphanProfilesCount: Int,
+        closedIdleApps: [String] = [],
+        reclaimedRAMBytes: UInt64 = 0,
+        throttledBackgroundCount: Int = 0,
         summary: String
     ) {
         self.id = id
@@ -65,7 +179,30 @@ public struct AutoOptimizeRunRecord: Codable, Sendable, Equatable, Identifiable 
         self.removedFilesCount = removedFilesCount
         self.truncatedLogsCount = truncatedLogsCount
         self.cleanedOrphanProfilesCount = cleanedOrphanProfilesCount
+        self.closedIdleApps = closedIdleApps
+        self.reclaimedRAMBytes = reclaimedRAMBytes
+        self.throttledBackgroundCount = throttledBackgroundCount
         self.summary = summary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, timestamp, trigger, freedBytes, removedFilesCount, truncatedLogsCount, cleanedOrphanProfilesCount
+        case closedIdleApps, reclaimedRAMBytes, throttledBackgroundCount, summary
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.timestamp = try c.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date()
+        self.trigger = try c.decodeIfPresent(AutoOptimizeTrigger.self, forKey: .trigger) ?? .scheduled
+        self.freedBytes = try c.decodeIfPresent(UInt64.self, forKey: .freedBytes) ?? 0
+        self.removedFilesCount = try c.decodeIfPresent(Int.self, forKey: .removedFilesCount) ?? 0
+        self.truncatedLogsCount = try c.decodeIfPresent(Int.self, forKey: .truncatedLogsCount) ?? 0
+        self.cleanedOrphanProfilesCount = try c.decodeIfPresent(Int.self, forKey: .cleanedOrphanProfilesCount) ?? 0
+        self.closedIdleApps = try c.decodeIfPresent([String].self, forKey: .closedIdleApps) ?? []
+        self.reclaimedRAMBytes = try c.decodeIfPresent(UInt64.self, forKey: .reclaimedRAMBytes) ?? 0
+        self.throttledBackgroundCount = try c.decodeIfPresent(Int.self, forKey: .throttledBackgroundCount) ?? 0
+        self.summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
     }
 }
 
@@ -73,18 +210,38 @@ public struct PersistedAutoOptimizeState: Codable, Sendable, Equatable {
     public var config: AutoOptimizeConfig
     public var lastRunAt: Date?
     public var totalLifetimeFreedBytes: UInt64
+    public var totalLifetimeReclaimedRAMBytes: UInt64
+    public var totalIdleAppsClosed: Int
     public var history: [AutoOptimizeRunRecord]
 
     public init(
         config: AutoOptimizeConfig = AutoOptimizeConfig(),
         lastRunAt: Date? = nil,
         totalLifetimeFreedBytes: UInt64 = 0,
+        totalLifetimeReclaimedRAMBytes: UInt64 = 0,
+        totalIdleAppsClosed: Int = 0,
         history: [AutoOptimizeRunRecord] = []
     ) {
         self.config = config
         self.lastRunAt = lastRunAt
         self.totalLifetimeFreedBytes = totalLifetimeFreedBytes
+        self.totalLifetimeReclaimedRAMBytes = totalLifetimeReclaimedRAMBytes
+        self.totalIdleAppsClosed = totalIdleAppsClosed
         self.history = history
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case config, lastRunAt, totalLifetimeFreedBytes, totalLifetimeReclaimedRAMBytes, totalIdleAppsClosed, history
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.config = try c.decodeIfPresent(AutoOptimizeConfig.self, forKey: .config) ?? AutoOptimizeConfig()
+        self.lastRunAt = try c.decodeIfPresent(Date.self, forKey: .lastRunAt)
+        self.totalLifetimeFreedBytes = try c.decodeIfPresent(UInt64.self, forKey: .totalLifetimeFreedBytes) ?? 0
+        self.totalLifetimeReclaimedRAMBytes = try c.decodeIfPresent(UInt64.self, forKey: .totalLifetimeReclaimedRAMBytes) ?? 0
+        self.totalIdleAppsClosed = try c.decodeIfPresent(Int.self, forKey: .totalIdleAppsClosed) ?? 0
+        self.history = try c.decodeIfPresent([AutoOptimizeRunRecord].self, forKey: .history) ?? []
     }
 }
 
@@ -127,13 +284,115 @@ public final class AutoOptimizerStore: @unchecked Sendable {
 }
 
 public enum AutoOptimizerEngine {
-    /// Determines whether Autopilot should run right now based on schedule or low-disk pressure.
-    /// Enforces a minimum 60-minute cooldown so it never thrashes the SSD.
+    /// Safe macOS background indexer/analyzer processes that can be politely reniced (+10)
+    /// when burning CPU so foreground work stays 100% smooth without killing anything.
+    public static let safeThrottleableHelperNames: Set<String> = [
+        "mdworker_shared",
+        "mdworker",
+        "mds_stores",
+        "photoanalysisd",
+        "mediaanalysisd",
+        "photolibraryd",
+        "cloudd",
+        "bird",
+        "parsecd",
+        "suggestd",
+        "triald",
+        "duetexpertd",
+        "knowledge-agent",
+        "corespotlightservice",
+        "biomeagent"
+    ]
+
+    /// Determines whether an app is protected from Idle Auto-Close.
+    /// Protects macOS essentials, VPS/Remote Desktop, Terminals, IDEs, LocalWP, primary Chrome, and user-locked apps.
+    public static func isProtectedWorkApp(
+        bundleID: String,
+        appName: String = "",
+        config: AutoOptimizeConfig
+    ) -> Bool {
+        if bundleID.isEmpty { return true }
+        // Always protect MacPulse, Finder, and active Remote/VPS apps unconditionally unless explicitly unlocked
+        if bundleID == "com.ducdung.MacPulse" || bundleID == "com.apple.finder" {
+            return true
+        }
+        if config.customProtectedBundleIDs.contains(bundleID) {
+            return true
+        }
+        if config.unlockedDefaultBundleIDs.contains(bundleID) {
+            return false
+        }
+        if AutoOptimizeConfig.defaultProtectedBundleIDs.contains(bundleID) {
+            return true
+        }
+        if VietnameseAppDetector.isVPSOrRemoteApp(bundleID: bundleID, appName: appName) {
+            return true
+        }
+        if VietnameseAppDetector.isTerminalApp(bundleID: bundleID, appName: appName) {
+            return true
+        }
+        return false
+    }
+
+    /// Selects genuinely idle, non-protected GUI apps eligible for polite Cmd+Q termination.
+    /// Safety gates: NOT frontmost, NOT protected, CPU < 2.0% (not doing active work), idle >= timeout.
+    public static func selectIdleAppsToClose(
+        runningApps: [TrackedGUIApp],
+        config: AutoOptimizeConfig,
+        now: Date = Date()
+    ) -> [TrackedGUIApp] {
+        guard config.autoCloseIdleApps else { return [] }
+        let thresholdSeconds = TimeInterval(max(10, config.idleAppTimeoutMinutes) * 60)
+
+        return runningApps
+            .filter { app in
+                guard !app.isFrontmost else { return false }
+                guard !isProtectedWorkApp(bundleID: app.bundleID, appName: app.name, config: config) else { return false }
+                guard app.cpuPercent < 2.0 else { return false }
+                return now.timeIntervalSince(app.lastActiveAt) >= thresholdSeconds
+            }
+            .sorted { $0.rssBytes > $1.rssBytes }
+    }
+
+    /// Politely lowers CPU priority (nice +10) of noisy user-owned background indexers/analyzers
+    /// currently consuming >= 5% CPU. Zero process killing, zero data loss.
+    public static func throttleNoisyBackgroundHelpers(
+        liveProcesses: [RawProcessInfo]? = nil
+    ) -> (count: Int, names: [String]) {
+        let procs = liveProcesses ?? ((try? ProcessScanner.scanLiveProcesses()) ?? [])
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        var throttled = 0
+        var seenNames: [String] = []
+
+        for proc in procs {
+            guard proc.pid > 1 && proc.pid != selfPID else { continue }
+            guard proc.cpuPercent >= 5.0 else { continue }
+            let commLower = URL(fileURLWithPath: proc.comm).lastPathComponent.lowercased()
+            guard safeThrottleableHelperNames.contains(commLower) else { continue }
+
+            // Check current nice value so we don't recount processes already reniced >= 10
+            errno = 0
+            let currentNice = getpriority(PRIO_PROCESS, id_t(proc.pid))
+            if errno == 0 && currentNice >= 10 { continue }
+
+            if setpriority(PRIO_PROCESS, id_t(proc.pid), 10) == 0 {
+                throttled += 1
+                if !seenNames.contains(commLower) {
+                    seenNames.append(commLower)
+                }
+            }
+        }
+        return (throttled, seenNames)
+    }
+
+    /// Determines whether Autopilot should run right now based on schedule (1h..24h), low disk, or high RAM compression.
+    /// Enforces safe CPU headroom (< 65%) and cooldown so it never thrashes the SSD.
     public static func evaluateTrigger(
         config: AutoOptimizeConfig,
         lastRunAt: Date?,
         availableDiskGB: Double,
         cpuBusyPercent: Double,
+        compressedRAMGB: Double = 0.0,
         now: Date = Date()
     ) -> AutoOptimizeTrigger? {
         guard config.isEnabled else { return nil }
@@ -141,16 +400,23 @@ public enum AutoOptimizerEngine {
         if cpuBusyPercent >= 65.0 { return nil }
 
         let elapsedSinceLast = lastRunAt.map { now.timeIntervalSince($0) } ?? .infinity
-        let minCooldown: TimeInterval = 3600 // 60 mins minimum between automatic runs
-        guard elapsedSinceLast >= minCooldown else { return nil }
+        let intervalSecs = TimeInterval(max(1, config.intervalHours) * 3600)
+        // Use 55m cooldown when scheduled for 1h so a 5-min timer tick never slips to 1h05m;
+        // otherwise keep 60m cooldown for SSD safety.
+        let diskCooldown: TimeInterval = (config.intervalHours <= 1) ? 3300 : 3600
 
-        if availableDiskGB > 0 && availableDiskGB < config.lowDiskTriggerGB {
-            return .lowDisk
+        if elapsedSinceLast >= diskCooldown {
+            if availableDiskGB > 0 && availableDiskGB < config.lowDiskTriggerGB {
+                return .lowDisk
+            }
+            if elapsedSinceLast >= intervalSecs {
+                return .scheduled
+            }
         }
 
-        let intervalSecs = TimeInterval(max(1, config.intervalHours) * 3600)
-        if elapsedSinceLast >= intervalSecs {
-            return .scheduled
+        // High RAM compression relief (e.g. >= 5.0 GB compressed) with 30-min cooldown when Idle Auto-Close is enabled
+        if config.autoCloseIdleApps && compressedRAMGB >= 5.0 && elapsedSinceLast >= 1800 {
+            return .ramPressure
         }
 
         return nil
@@ -158,9 +424,10 @@ public enum AutoOptimizerEngine {
 
     /// Runs a 100% safe, non-destructive background optimization pass:
     /// - Removes stale cache files not accessed/modified within `staleCacheDays`
-    /// - Removes old updater/ShipIt/QuickLook garbage (> 24h)
+    /// - Removes old updater/ShipIt/QuickLook garbage
     /// - Truncates oversized LocalWP logs (> 15 MB) in-place
     /// - Removes dead /tmp automation profile directories not used by any live process
+    /// - Politely renices (+10) noisy background macOS indexers/analyzers
     /// NEVER touches Trash, Cookies, Chrome Extensions, Sessions, Databases, or AI models.
     public static func runPass(
         config: AutoOptimizeConfig,
@@ -168,6 +435,9 @@ public enum AutoOptimizerEngine {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         tempDirectory: URL = URL(fileURLWithPath: "/tmp"),
         liveProcessArgs: [String]? = nil,
+        liveProcessesForThrottle: [RawProcessInfo]? = nil,
+        closedIdleAppNames: [String] = [],
+        reclaimedRAMBytes: UInt64 = 0,
         now: Date = Date()
     ) -> AutoOptimizeRunRecord {
         let fm = FileManager.default
@@ -176,9 +446,9 @@ public enum AutoOptimizerEngine {
         var removedFiles = 0
         var truncatedLogs = 0
         var cleanedProfiles = 0
+        var throttledCount = 0
 
         // 1. Safe updater & ephemeral OS/AI garbage (always safe even when apps are open)
-        // Automatic runs wait 24h; manual "Tối ưu ngay" waits 2h so actively downloading updates stay untouched.
         if config.autoCleanUpdaterGarbage {
             let updaterBuffer: TimeInterval = (trigger == .manual) ? 7200 : 86400
             let updaterCutoff = now.addingTimeInterval(-updaterBuffer)
@@ -210,7 +480,6 @@ public enum AutoOptimizerEngine {
         if config.autoCleanStaleCaches {
             let days = max(1, config.staleCacheDays)
             let staleCutoff = now.addingTimeInterval(-TimeInterval(days * 86400))
-            // Pure OS caches (~/Library/Caches/...) never contain Extensions, Cookies, or user logins
             var staleTargets = [
                 "Library/Caches/Google/Chrome",
                 "Library/Caches/BraveSoftware",
@@ -294,7 +563,7 @@ public enum AutoOptimizerEngine {
             if let injected = liveProcessArgs {
                 activeArgs = injected.map { $0.lowercased() }
             } else {
-                let live = (try? ProcessScanner.scanLiveProcesses()) ?? []
+                let live = liveProcessesForThrottle ?? ((try? ProcessScanner.scanLiveProcesses()) ?? [])
                 activeArgs = live.map { $0.args.lowercased() }
             }
             let orphanCutoff = now.addingTimeInterval(-1800) // 30 mins
@@ -326,23 +595,21 @@ public enum AutoOptimizerEngine {
             }
         }
 
-        var parts: [String] = []
-        if totalFreed > 0 {
-            parts.append("Giải phóng \(Formatters.bytes(totalFreed))")
-        }
-        if removedFiles > 0 {
-            parts.append("\(removedFiles) tệp cache cũ")
-        }
-        if truncatedLogs > 0 {
-            parts.append("\(truncatedLogs) file log lớn")
-        }
-        if cleanedProfiles > 0 {
-            parts.append("\(cleanedProfiles) profile tạm mồ côi")
+        // 5. Politely throttle noisy background macOS indexers/analyzers (+10 nice, zero killing)
+        if config.autoThrottleBackgroundHogs {
+            let throttleRes = throttleNoisyBackgroundHelpers(liveProcesses: liveProcessesForThrottle)
+            throttledCount = throttleRes.count
         }
 
-        let summary = parts.isEmpty
-            ? "Hệ thống đã sạch — không có cache cũ hoặc rác thừa cần dọn."
-            : parts.joined(separator: " • ")
+        let summary = buildSummary(
+            freedBytes: totalFreed,
+            removedFiles: removedFiles,
+            truncatedLogs: truncatedLogs,
+            cleanedProfiles: cleanedProfiles,
+            closedIdleApps: closedIdleAppNames,
+            reclaimedRAMBytes: reclaimedRAMBytes,
+            throttledCount: throttledCount
+        )
 
         return AutoOptimizeRunRecord(
             timestamp: now,
@@ -351,8 +618,45 @@ public enum AutoOptimizerEngine {
             removedFilesCount: removedFiles,
             truncatedLogsCount: truncatedLogs,
             cleanedOrphanProfilesCount: cleanedProfiles,
+            closedIdleApps: closedIdleAppNames,
+            reclaimedRAMBytes: reclaimedRAMBytes,
+            throttledBackgroundCount: throttledCount,
             summary: summary
         )
+    }
+
+    public static func buildSummary(
+        freedBytes: UInt64,
+        removedFiles: Int,
+        truncatedLogs: Int,
+        cleanedProfiles: Int,
+        closedIdleApps: [String],
+        reclaimedRAMBytes: UInt64,
+        throttledCount: Int
+    ) -> String {
+        var parts: [String] = []
+        if freedBytes > 0 {
+            parts.append("Dọn \(Formatters.bytes(freedBytes)) SSD")
+        }
+        if !closedIdleApps.isEmpty {
+            let ramNote = reclaimedRAMBytes > 0 ? " (~\(Formatters.bytes(reclaimedRAMBytes)) RAM)" : ""
+            parts.append("Tắt êm \(closedIdleApps.count) app rảnh\(ramNote)")
+        }
+        if throttledCount > 0 {
+            parts.append("Hạ ưu tiên \(throttledCount) tiến trình nền")
+        }
+        if removedFiles > 0 && freedBytes == 0 {
+            parts.append("\(removedFiles) tệp cache cũ")
+        }
+        if truncatedLogs > 0 {
+            parts.append("\(truncatedLogs) log lớn")
+        }
+        if cleanedProfiles > 0 {
+            parts.append("\(cleanedProfiles) profile /tmp")
+        }
+        return parts.isEmpty
+            ? "Hệ thống đã mượt & sạch — không có cache cũ hay app rảnh cần xử lý."
+            : parts.joined(separator: " • ")
     }
 
     /// Recursively sweeps regular files (and optionally stale .app updater packages) whose latest
@@ -397,7 +701,6 @@ public enum AutoOptimizerEngine {
             guard let vals = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
             if vals.isSymbolicLink == true { continue }
 
-            // Handle unpacked .app packages inside ShipIt/updater directories
             if includePackages && vals.isPackage == true {
                 let mDate = vals.contentModificationDate ?? .distantPast
                 let aDate = vals.contentAccessDate ?? mDate
@@ -426,7 +729,6 @@ public enum AutoOptimizerEngine {
 
             let mDate = vals.contentModificationDate ?? .distantPast
             let aDate = vals.contentAccessDate ?? mDate
-            // Conservative: use the NEWER of modification & access time so actively read caches stay intact
             let lastTouched = max(mDate, aDate)
             guard lastTouched < cutoffDate else { continue }
 
@@ -436,12 +738,10 @@ public enum AutoOptimizerEngine {
                 freed += sz
                 count += 1
             } catch {
-                // File currently locked by a live app — safely skip
                 continue
             }
         }
 
-        // Prune strictly empty leaf subdirectories left behind (deepest paths first, never dirURL itself)
         if count > 0 && !subdirs.isEmpty {
             let sortedSubdirs = subdirs.sorted { $0.pathComponents.count > $1.pathComponents.count }
             for sub in sortedSubdirs {
