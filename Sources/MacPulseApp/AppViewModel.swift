@@ -586,8 +586,10 @@ public final class AppViewModel: ObservableObject {
     public func testOpenCodeAlert() {
         let sample = OpenCodeCompletionEvent(
             sessionID: "test-\(UUID().uuidString.prefix(8))",
-            title: "Thử thông báo hoàn tất task OpenCode (nhấn Mở OpenCode để nhảy tới terminal)",
-            projectName: "MacPulse Test",
+            title: "Responsive plan for section two desktop",
+            promptSummary: "Hoàn tất code & kiểm tra responsive — bấm Mở OpenCode để xem ngay",
+            modeLabel: "CODE",
+            projectName: "alonepro",
             directory: NSHomeDirectory(),
             outcome: .succeeded,
             durationSeconds: 47,

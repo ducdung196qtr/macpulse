@@ -1492,41 +1492,49 @@ suite.test("IME 46: Composing rhymes (uê, êu, ênh, uâ) + English words + acc
     try expect(!VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.apple.archiveutility", appName: "Archive Utility"), "Archive Utility must NOT match Arc browser")
 }
 
-suite.test("v2.0: OpenCodeMonitor detects busy-to-idle transitions without startup spam or duplicate alerts") {
+suite.test("v2.0: OpenCodeMonitor isolates interactive TUI sessions from headless OpenMausBot/ACP bots and detects completions") {
     let monitor = OpenCodeMonitor(databaseURL: URL(fileURLWithPath: "/nonexistent/opencode.db"))
-    let cfg = OpenCodeNotifyConfig(isEnabled: true, onlyTopLevelSessions: true, ignoreEmptyBotSessions: true, minDurationSeconds: 3)
+    let cfg = OpenCodeNotifyConfig(isEnabled: true, onlyInteractiveSessions: true, onlyTopLevelSessions: true, ignoreEmptyBotSessions: true, minDurationSeconds: 0)
 
     let t0 = Date(timeIntervalSince1970: 1_795_594_000)
     let t0Ms = Int64(t0.timeIntervalSince1970 * 1000)
 
-    // Poll 1 (baseline): 1 historical idle session + 1 currently running session + 1 child subagent + 1 bot helper
+    // Poll 1 (baseline):
+    // - 1 historical TUI session (agent=build, time_viewed set)
+    // - 1 active TUI session in plan mode (agent=plan, time_viewed set, JSON model)
+    // - 1 headless OpenMausBot ACP session (agent=nil, time_viewed=nil -> MUST be ignored!)
+    // - 1 child subagent session (parentID set -> MUST be ignored!)
     let initialSessions = [
-        OpenCodeSessionItem(id: "ses-old", rawTitle: "Old task", directory: "/work/alonepro", timeBusyMs: t0Ms - 60_000, timeIdleMs: t0Ms - 20_000, timeUpdatedMs: t0Ms - 20_000, outcome: .succeeded),
-        OpenCodeSessionItem(id: "ses-active", rawTitle: "Build hero section", directory: "/work/alonepro", timeBusyMs: t0Ms - 10_000, timeIdleMs: t0Ms - 50_000, timeUpdatedMs: t0Ms - 10_000, outcome: .succeeded),
-        OpenCodeSessionItem(id: "ses-child", rawTitle: "Subagent work", directory: "/work/alonepro", parentID: "ses-active", timeBusyMs: t0Ms - 8_000, timeIdleMs: nil, timeUpdatedMs: t0Ms - 8_000, outcome: .unknown),
-        OpenCodeSessionItem(id: "ses-bot", rawTitle: "", directory: "/tmp/omb-acp-memory-abc", timeBusyMs: t0Ms - 5_000, timeIdleMs: nil, timeUpdatedMs: t0Ms - 5_000, outcome: .unknown)
+        OpenCodeSessionItem(id: "ses-old", rawTitle: "Old task", directory: "/work/alonepro", agent: "build", model: "{\"id\":\"gpt-6.1-terra\",\"providerID\":\"openai\"}", timeBusyMs: t0Ms - 60_000, timeIdleMs: t0Ms - 20_000, timeViewedMs: t0Ms - 20_000, timeUpdatedMs: t0Ms - 20_000, outcome: .succeeded),
+        OpenCodeSessionItem(id: "ses-active", rawTitle: "Responsive plan", directory: "/work/alonepro", agent: "plan", model: "{\"id\":\"gpt-6.1-sol\",\"providerID\":\"openai\"}", latestPrompt: "lên plan chi tiết đi", timeBusyMs: t0Ms - 10_000, timeIdleMs: t0Ms - 50_000, timeViewedMs: t0Ms - 50_000, timeUpdatedMs: t0Ms - 10_000, outcome: .succeeded),
+        OpenCodeSessionItem(id: "ses-omb-bot", rawTitle: "Team task planning with OpenCode limits", directory: "/Volumes/DEVELOPER/beplus-site-assistant-pro", agent: nil, timeBusyMs: t0Ms - 8_000, timeIdleMs: nil, timeViewedMs: nil, timeUpdatedMs: t0Ms - 8_000, outcome: .unknown),
+        OpenCodeSessionItem(id: "ses-child", rawTitle: "Subagent work", directory: "/work/alonepro", parentID: "ses-active", agent: "explore", timeBusyMs: t0Ms - 8_000, timeIdleMs: nil, timeViewedMs: nil, timeUpdatedMs: t0Ms - 8_000, outcome: .unknown)
     ]
 
     let r1 = monitor.evaluateSnapshotForTesting(sessions: initialSessions, config: cfg, now: t0)
     try expectEqual(r1.newlyCompleted.count, 0, "Baseline poll must never spam notifications for historical tasks")
-    try expectEqual(r1.runningSessions.count, 1, "Only top-level active user session should count as running")
+    try expectEqual(r1.runningSessions.count, 1, "Only interactive TUI session must appear as running")
     try expectEqual(r1.runningSessions.first?.id, "ses-active")
+    try expectEqual(r1.runningSessions.first?.displayModel, "gpt-6.1-sol")
+    try expectEqual(r1.runningSessions.first?.modeBadgeLabel, "PLAN")
 
-    // Poll 2 (+15s): ses-active finishes cleanly (duration = 25s), child & bot also finish (must be filtered!)
+    // Poll 2 (+15s): ses-active finishes cleanly (duration = 25s), OpenMausBot & child also finish (must be filtered!)
     let t1 = t0.addingTimeInterval(15)
     let t1Ms = Int64(t1.timeIntervalSince1970 * 1000)
     let finishedSessions = [
-        OpenCodeSessionItem(id: "ses-old", rawTitle: "Old task", directory: "/work/alonepro", timeBusyMs: t0Ms - 60_000, timeIdleMs: t0Ms - 20_000, timeUpdatedMs: t1Ms, outcome: .succeeded),
-        OpenCodeSessionItem(id: "ses-active", rawTitle: "Build hero section", directory: "/work/alonepro", timeBusyMs: t0Ms - 10_000, timeIdleMs: t1Ms, timeUpdatedMs: t1Ms, outcome: .succeeded),
-        OpenCodeSessionItem(id: "ses-child", rawTitle: "Subagent work", directory: "/work/alonepro", parentID: "ses-active", timeBusyMs: t0Ms - 8_000, timeIdleMs: t1Ms, timeUpdatedMs: t1Ms, outcome: .succeeded),
-        OpenCodeSessionItem(id: "ses-bot", rawTitle: "", directory: "/tmp/omb-acp-memory-abc", timeBusyMs: t0Ms - 5_000, timeIdleMs: t1Ms, timeUpdatedMs: t1Ms, outcome: .succeeded)
+        OpenCodeSessionItem(id: "ses-old", rawTitle: "Old task", directory: "/work/alonepro", agent: "build", timeBusyMs: t0Ms - 60_000, timeIdleMs: t0Ms - 20_000, timeViewedMs: t0Ms - 20_000, timeUpdatedMs: t1Ms, outcome: .succeeded),
+        OpenCodeSessionItem(id: "ses-active", rawTitle: "Responsive plan", directory: "/work/alonepro", agent: "plan", latestPrompt: "lên plan chi tiết đi", timeBusyMs: t0Ms - 10_000, timeIdleMs: t1Ms, timeViewedMs: t1Ms, timeUpdatedMs: t1Ms, outcome: .succeeded),
+        OpenCodeSessionItem(id: "ses-omb-bot", rawTitle: "Team task planning with OpenCode limits", directory: "/Volumes/DEVELOPER/beplus-site-assistant-pro", agent: nil, timeBusyMs: t0Ms - 8_000, timeIdleMs: t1Ms, timeViewedMs: nil, timeUpdatedMs: t1Ms, outcome: .succeeded),
+        OpenCodeSessionItem(id: "ses-child", rawTitle: "Subagent work", directory: "/work/alonepro", parentID: "ses-active", agent: "explore", timeBusyMs: t0Ms - 8_000, timeIdleMs: t1Ms, timeViewedMs: nil, timeUpdatedMs: t1Ms, outcome: .succeeded)
     ]
 
     let r2 = monitor.evaluateSnapshotForTesting(sessions: finishedSessions, config: cfg, now: t1)
     try expectEqual(r2.runningSessions.count, 0)
-    try expectEqual(r2.newlyCompleted.count, 1, "Exactly 1 completion event should fire for ses-active")
+    try expectEqual(r2.newlyCompleted.count, 1, "Exactly 1 completion event should fire for interactive TUI session ses-active")
     try expectEqual(r2.newlyCompleted.first?.sessionID, "ses-active")
     try expectEqual(r2.newlyCompleted.first?.projectName, "alonepro")
+    try expectEqual(r2.newlyCompleted.first?.modeLabel, "PLAN")
+    try expectEqual(r2.newlyCompleted.first?.promptSummary, "lên plan chi tiết đi")
     try expectEqual(r2.newlyCompleted.first?.outcome, .succeeded)
     try expect((r2.newlyCompleted.first?.durationSeconds ?? 0) >= 24.5, "Duration should be ~25s")
 
@@ -1534,7 +1542,7 @@ suite.test("v2.0: OpenCodeMonitor detects busy-to-idle transitions without start
     let t2 = t0.addingTimeInterval(20)
     let t2Ms = Int64(t2.timeIntervalSince1970 * 1000)
     let viewedSessions = [
-        OpenCodeSessionItem(id: "ses-active", rawTitle: "Build hero section", directory: "/work/alonepro", timeBusyMs: t0Ms - 10_000, timeIdleMs: t1Ms, timeUpdatedMs: t2Ms, outcome: .succeeded)
+        OpenCodeSessionItem(id: "ses-active", rawTitle: "Responsive plan", directory: "/work/alonepro", agent: "plan", timeBusyMs: t0Ms - 10_000, timeIdleMs: t1Ms, timeViewedMs: t2Ms, timeUpdatedMs: t2Ms, outcome: .succeeded)
     ]
     let r3 = monitor.evaluateSnapshotForTesting(sessions: viewedSessions, config: cfg, now: t2)
     try expectEqual(r3.newlyCompleted.count, 0, "Viewing an already-completed session must NOT re-trigger notification")
@@ -1558,24 +1566,28 @@ suite.test("v2.0: OpenCodeMonitor reads real SQLite session_v2 table and skips r
         parent_id TEXT,
         directory TEXT NOT NULL,
         title TEXT,
+        agent TEXT,
         model TEXT,
         time_busy INTEGER,
         time_idle INTEGER,
+        time_viewed INTEGER,
         idle_outcome TEXT,
         time_updated INTEGER NOT NULL
     );
-    INSERT INTO session_v2 VALUES ('ses-1', NULL, '/Volumes/DEVELOPER/macpluse', 'Refactor UI', 'gpt-5', \(nowMs - 8000), NULL, NULL, \(nowMs - 8000));
+    INSERT INTO session_v2 VALUES ('ses-1', NULL, '/Volumes/DEVELOPER/macpluse', 'Refactor UI', 'build', '{"id":"gpt-6.1-terra","providerID":"openai"}', \(nowMs - 8000), NULL, \(nowMs - 8000), NULL, \(nowMs - 8000));
+    INSERT INTO session_v2 VALUES ('ses-bot', NULL, '/Volumes/DEVELOPER/bot-repo', 'Bot task', NULL, NULL, \(nowMs - 7000), NULL, NULL, NULL, \(nowMs - 7000));
     """
     try expectEqual(sqlite3_exec(db, createSQL, nil, nil, nil), SQLITE_OK)
 
     let monitor = OpenCodeMonitor(databaseURL: dbURL)
-    let cfg = OpenCodeNotifyConfig(isEnabled: true, minDurationSeconds: 1)
+    let cfg = OpenCodeNotifyConfig(isEnabled: true, onlyInteractiveSessions: true, minDurationSeconds: 0)
 
     let p1 = monitor.poll(config: cfg, now: Date(timeIntervalSince1970: Double(nowMs) / 1000.0))
     try expect(p1.isDatabaseAvailable, "Mock DB must be detected")
     try expect(p1.didReadDatabase, "First poll must read SQLite")
-    try expectEqual(p1.runningSessions.count, 1)
+    try expectEqual(p1.runningSessions.count, 1, "Must filter out headless bot session without time_viewed/agent")
     try expectEqual(p1.runningSessions.first?.displayTitle, "Refactor UI")
+    try expectEqual(p1.runningSessions.first?.displayModel, "gpt-6.1-terra")
 
     // Second poll without DB change -> stat() skips SQLite read completely!
     let p2 = monitor.poll(config: cfg, now: Date(timeIntervalSince1970: Double(nowMs + 1000) / 1000.0))
@@ -1590,6 +1602,7 @@ suite.test("v2.0: OpenCodeMonitor reads real SQLite session_v2 table and skips r
     try expectEqual(p3.runningSessions.count, 0)
     try expectEqual(p3.newlyCompleted.count, 1, "SQLite busy->idle transition must trigger completion event")
     try expectEqual(p3.newlyCompleted.first?.title, "Refactor UI")
+    try expectEqual(p3.newlyCompleted.first?.modeLabel, "CODE")
 }
 
 suite.test("v2.0: OpenCodeMonitorStore persists config and recent alert history") {

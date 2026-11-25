@@ -36,9 +36,12 @@ public struct OpenCodeSessionItem: Identifiable, Codable, Sendable, Equatable {
     public let rawTitle: String
     public let directory: String
     public let parentID: String?
+    public let agent: String?
     public let model: String?
+    public let latestPrompt: String?
     public let timeBusyMs: Int64?
     public let timeIdleMs: Int64?
+    public let timeViewedMs: Int64?
     public let timeUpdatedMs: Int64
     public let outcome: OpenCodeTaskOutcome
 
@@ -47,9 +50,12 @@ public struct OpenCodeSessionItem: Identifiable, Codable, Sendable, Equatable {
         rawTitle: String,
         directory: String,
         parentID: String? = nil,
+        agent: String? = nil,
         model: String? = nil,
+        latestPrompt: String? = nil,
         timeBusyMs: Int64? = nil,
         timeIdleMs: Int64? = nil,
+        timeViewedMs: Int64? = nil,
         timeUpdatedMs: Int64,
         outcome: OpenCodeTaskOutcome = .unknown
     ) {
@@ -57,9 +63,12 @@ public struct OpenCodeSessionItem: Identifiable, Codable, Sendable, Equatable {
         self.rawTitle = rawTitle
         self.directory = directory
         self.parentID = parentID
+        self.agent = agent
         self.model = model
+        self.latestPrompt = latestPrompt
         self.timeBusyMs = timeBusyMs
         self.timeIdleMs = timeIdleMs
+        self.timeViewedMs = timeViewedMs
         self.timeUpdatedMs = timeUpdatedMs
         self.outcome = outcome
     }
@@ -74,18 +83,75 @@ public struct OpenCodeSessionItem: Identifiable, Codable, Sendable, Equatable {
     public var displayTitle: String {
         let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
+        if let prompt = cleanedLatestPrompt, !prompt.isEmpty { return prompt }
         return "Phiên làm việc (\(projectName))"
+    }
+
+    public var cleanedLatestPrompt: String? {
+        guard let raw = latestPrompt else { return nil }
+        let singleLine = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !singleLine.isEmpty else { return nil }
+        // Hide noisy OpenMausBot injected context prefixes if ever shown
+        if singleLine.hasPrefix("Context from OpenMausBot") { return nil }
+        if singleLine.count > 90 {
+            return String(singleLine.prefix(87)) + "..."
+        }
+        return singleLine
+    }
+
+    /// Cleanly parses OpenCode's JSON model column (`{"id":"gpt-6.1-terra","providerID":"openai"}`) into `"gpt-6.1-terra"`.
+    public var displayModel: String? {
+        guard let raw = model?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if raw.hasPrefix("{"), let data = raw.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let id = obj["id"] as? String, !id.isEmpty {
+            return id
+        }
+        return raw
+    }
+
+    public var modeBadgeLabel: String? {
+        guard let a = agent?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !a.isEmpty else {
+            return nil
+        }
+        switch a {
+        case "plan": return "PLAN"
+        case "build": return "CODE"
+        default: return a.uppercased()
+        }
     }
 
     public var isSubagentSession: Bool {
         if let p = parentID, !p.isEmpty { return true }
+        if let a = agent?.lowercased(), a == "explore" || a == "subagent" { return true }
         return false
     }
 
     public var isBackgroundBotHelper: Bool {
         let lowerDir = directory.lowercased()
         let emptyTitle = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return emptyTitle && (lowerDir.contains("omb-acp-memory") || lowerDir.contains("/var/folders/"))
+        if lowerDir.contains("omb-acp-memory") || lowerDir.contains("/var/folders/") { return true }
+        if lowerDir == "/" || lowerDir.isEmpty { return true }
+        if emptyTitle && timeViewedMs == nil { return true }
+        return false
+    }
+
+    /// True ONLY for interactive OpenCode TUI sessions opened by the user (excludes headless OpenMausBot / ACP bot sessions).
+    /// In OpenCode's `session_v2`, user TUI sessions always carry `time_viewed` and/or `agent IN ('build', 'plan')`,
+    /// whereas headless OpenMausBot/ACP sessions have both `time_viewed IS NULL` and `agent IS NULL`.
+    public var isInteractiveUserSession: Bool {
+        guard !isSubagentSession && !isBackgroundBotHelper else { return false }
+        if let viewed = timeViewedMs, viewed > 0 { return true }
+        if let a = agent?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           (a == "build" || a == "plan") {
+            return true
+        }
+        return false
     }
 
     public func isRunning(nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) -> Bool {
@@ -121,6 +187,7 @@ public struct OpenCodeNotifyConfig: Codable, Sendable, Equatable {
     public var soundName: String
     public var showFloatingBanner: Bool
     public var showSystemNotification: Bool
+    public var onlyInteractiveSessions: Bool
     public var onlyTopLevelSessions: Bool
     public var ignoreEmptyBotSessions: Bool
     public var minDurationSeconds: Int
@@ -135,18 +202,38 @@ public struct OpenCodeNotifyConfig: Codable, Sendable, Equatable {
         soundName: String = "Glass",
         showFloatingBanner: Bool = true,
         showSystemNotification: Bool = false,
+        onlyInteractiveSessions: Bool = true,
         onlyTopLevelSessions: Bool = true,
         ignoreEmptyBotSessions: Bool = true,
-        minDurationSeconds: Int = 3
+        minDurationSeconds: Int = 0
     ) {
         self.isEnabled = isEnabled
         self.playSound = playSound
         self.soundName = soundName
         self.showFloatingBanner = showFloatingBanner
         self.showSystemNotification = showSystemNotification
+        self.onlyInteractiveSessions = onlyInteractiveSessions
         self.onlyTopLevelSessions = onlyTopLevelSessions
         self.ignoreEmptyBotSessions = ignoreEmptyBotSessions
         self.minDurationSeconds = minDurationSeconds
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled, playSound, soundName, showFloatingBanner, showSystemNotification
+        case onlyInteractiveSessions, onlyTopLevelSessions, ignoreEmptyBotSessions, minDurationSeconds
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        self.playSound = try c.decodeIfPresent(Bool.self, forKey: .playSound) ?? true
+        self.soundName = try c.decodeIfPresent(String.self, forKey: .soundName) ?? "Glass"
+        self.showFloatingBanner = try c.decodeIfPresent(Bool.self, forKey: .showFloatingBanner) ?? true
+        self.showSystemNotification = try c.decodeIfPresent(Bool.self, forKey: .showSystemNotification) ?? false
+        self.onlyInteractiveSessions = try c.decodeIfPresent(Bool.self, forKey: .onlyInteractiveSessions) ?? true
+        self.onlyTopLevelSessions = try c.decodeIfPresent(Bool.self, forKey: .onlyTopLevelSessions) ?? true
+        self.ignoreEmptyBotSessions = try c.decodeIfPresent(Bool.self, forKey: .ignoreEmptyBotSessions) ?? true
+        self.minDurationSeconds = try c.decodeIfPresent(Int.self, forKey: .minDurationSeconds) ?? 0
     }
 }
 
@@ -154,6 +241,8 @@ public struct OpenCodeCompletionEvent: Identifiable, Codable, Sendable, Equatabl
     public let id: UUID
     public let sessionID: String
     public let title: String
+    public let promptSummary: String?
+    public let modeLabel: String?
     public let projectName: String
     public let directory: String
     public let outcome: OpenCodeTaskOutcome
@@ -164,6 +253,8 @@ public struct OpenCodeCompletionEvent: Identifiable, Codable, Sendable, Equatabl
         id: UUID = UUID(),
         sessionID: String,
         title: String,
+        promptSummary: String? = nil,
+        modeLabel: String? = nil,
         projectName: String,
         directory: String,
         outcome: OpenCodeTaskOutcome,
@@ -173,6 +264,8 @@ public struct OpenCodeCompletionEvent: Identifiable, Codable, Sendable, Equatabl
         self.id = id
         self.sessionID = sessionID
         self.title = title
+        self.promptSummary = promptSummary
+        self.modeLabel = modeLabel
         self.projectName = projectName
         self.directory = directory
         self.outcome = outcome
@@ -256,7 +349,7 @@ public struct OpenCodePollResult: Sendable, Equatable {
 
 /// High-efficiency OpenCode session watcher.
 /// Uses a zero-I/O `stat()` check on `opencode.db` + `opencode.db-wal` before ever opening SQLite,
-/// then reads only the 25 most recently updated rows from `session_v2` in read-only mode (~0.3 ms).
+/// and accurately isolates interactive user TUI sessions from background OpenMausBot/ACP bots.
 public final class OpenCodeMonitor: @unchecked Sendable {
     private struct FileFingerprint: Equatable {
         let dbMtimeSec: Int
@@ -349,7 +442,11 @@ public final class OpenCodeMonitor: @unchecked Sendable {
         }
         lock.unlock()
 
-        let sessions = Self.queryRecentSessions(dbPath: databaseURL.path, limit: 25)
+        let sessions = Self.queryRecentSessions(
+            dbPath: databaseURL.path,
+            onlyInteractive: config.onlyInteractiveSessions,
+            limit: 40
+        )
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
 
         lock.lock()
@@ -377,6 +474,7 @@ public final class OpenCodeMonitor: @unchecked Sendable {
         nowMs: Int64
     ) -> OpenCodePollResult {
         let filtered = sessions.filter { item in
+            if config.onlyInteractiveSessions && !item.isInteractiveUserSession { return false }
             if config.onlyTopLevelSessions && item.isSubagentSession { return false }
             if config.ignoreEmptyBotSessions && item.isBackgroundBotHelper { return false }
             return true
@@ -428,6 +526,8 @@ public final class OpenCodeMonitor: @unchecked Sendable {
                         newlyCompleted.append(OpenCodeCompletionEvent(
                             sessionID: s.id,
                             title: s.displayTitle,
+                            promptSummary: s.cleanedLatestPrompt,
+                            modeLabel: s.modeBadgeLabel,
                             projectName: s.projectName,
                             directory: s.directory,
                             outcome: s.outcome,
@@ -443,7 +543,6 @@ public final class OpenCodeMonitor: @unchecked Sendable {
             }
         }
 
-        // Keep map bounded to recent 128 sessions
         if knownIdleMsBySession.count > 128 {
             let activeIDs = Set(sessions.map(\.id))
             knownIdleMsBySession = knownIdleMsBySession.filter { activeIDs.contains($0.key) }
@@ -461,7 +560,11 @@ public final class OpenCodeMonitor: @unchecked Sendable {
         )
     }
 
-    public static func queryRecentSessions(dbPath: String, limit: Int = 25) -> [OpenCodeSessionItem] {
+    public static func queryRecentSessions(
+        dbPath: String,
+        onlyInteractive: Bool = true,
+        limit: Int = 40
+    ) -> [OpenCodeSessionItem] {
         var db: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
         guard sqlite3_open_v2(dbPath, &db, flags, nil) == SQLITE_OK, let db else {
@@ -471,10 +574,15 @@ public final class OpenCodeMonitor: @unchecked Sendable {
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, 150)
 
+        let whereClause = onlyInteractive
+            ? "WHERE parent_id IS NULL AND (time_viewed IS NOT NULL OR agent IN ('build', 'plan'))"
+            : ""
+
         let sql = """
-        SELECT id, coalesce(title, ''), coalesce(directory, ''), parent_id, model,
-               time_busy, time_idle, coalesce(idle_outcome, ''), time_updated
+        SELECT id, coalesce(title, ''), coalesce(directory, ''), parent_id, agent, model,
+               time_busy, time_idle, time_viewed, coalesce(idle_outcome, ''), time_updated
         FROM session_v2
+        \(whereClause)
         ORDER BY time_updated DESC
         LIMIT ?;
         """
@@ -486,35 +594,143 @@ public final class OpenCodeMonitor: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int(stmt, 1, Int32(limit))
 
-        var items: [OpenCodeSessionItem] = []
-        items.reserveCapacity(limit)
+        struct RawRow {
+            let id: String
+            let rawTitle: String
+            let directory: String
+            let parentID: String?
+            let agent: String?
+            let model: String?
+            let timeBusyMs: Int64?
+            let timeIdleMs: Int64?
+            let timeViewedMs: Int64?
+            let outcomeRaw: String
+            let timeUpdatedMs: Int64
+        }
+
+        var rows: [RawRow] = []
+        rows.reserveCapacity(limit)
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let id = columnText(stmt, 0)
             guard !id.isEmpty else { continue }
-            let rawTitle = columnText(stmt, 1)
-            let directory = columnText(stmt, 2)
-            let parentID = columnOptionalText(stmt, 3)
-            let model = columnOptionalText(stmt, 4)
-            let timeBusyMs = columnOptionalInt64(stmt, 5)
-            let timeIdleMs = columnOptionalInt64(stmt, 6)
-            let outcomeRaw = columnText(stmt, 7)
-            let timeUpdatedMs = sqlite3_column_int64(stmt, 8)
+            rows.append(RawRow(
+                id: id,
+                rawTitle: columnText(stmt, 1),
+                directory: columnText(stmt, 2),
+                parentID: columnOptionalText(stmt, 3),
+                agent: columnOptionalText(stmt, 4),
+                model: columnOptionalText(stmt, 5),
+                timeBusyMs: columnOptionalInt64(stmt, 6),
+                timeIdleMs: columnOptionalInt64(stmt, 7),
+                timeViewedMs: columnOptionalInt64(stmt, 8),
+                outcomeRaw: columnText(stmt, 9),
+                timeUpdatedMs: sqlite3_column_int64(stmt, 10)
+            ))
+        }
+
+        // Enrich top 8 sessions with latest user prompt & latest active agent mode via indexed lookup (~0.1ms each)
+        var promptStmt: OpaquePointer?
+        let hasPromptTable = sqlite3_prepare_v2(
+            db,
+            "SELECT substr(data, 1, 512) FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq DESC LIMIT 1;",
+            -1,
+            &promptStmt,
+            nil
+        ) == SQLITE_OK
+        defer { if let promptStmt { sqlite3_finalize(promptStmt) } }
+
+        var agentStmt: OpaquePointer?
+        let hasAgentTable = sqlite3_prepare_v2(
+            db,
+            "SELECT substr(data, 1, 256) FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1;",
+            -1,
+            &agentStmt,
+            nil
+        ) == SQLITE_OK
+        defer { if let agentStmt { sqlite3_finalize(agentStmt) } }
+
+        var items: [OpenCodeSessionItem] = []
+        items.reserveCapacity(rows.count)
+
+        for (idx, row) in rows.enumerated() {
+            var latestPrompt: String? = nil
+            var effectiveAgent = row.agent
+
+            if idx < 8 {
+                if hasPromptTable, let ps = promptStmt {
+                    sqlite3_reset(ps)
+                    sqlite3_clear_bindings(ps)
+                    sqlite3_bind_text(ps, 1, (row.id as NSString).utf8String, -1, nil)
+                    if sqlite3_step(ps) == SQLITE_ROW {
+                        let rawJSON = columnText(ps, 0)
+                        latestPrompt = extractJSONStringField(from: rawJSON, key: "text")
+                    }
+                }
+                if hasAgentTable, let ast = agentStmt {
+                    sqlite3_reset(ast)
+                    sqlite3_clear_bindings(ast)
+                    sqlite3_bind_text(ast, 1, (row.id as NSString).utf8String, -1, nil)
+                    if sqlite3_step(ast) == SQLITE_ROW {
+                        let rawJSON = columnText(ast, 0)
+                        if let liveAgent = extractJSONStringField(from: rawJSON, key: "agent"), !liveAgent.isEmpty {
+                            effectiveAgent = liveAgent
+                        }
+                    }
+                }
+            }
 
             items.append(OpenCodeSessionItem(
-                id: id,
-                rawTitle: rawTitle,
-                directory: directory,
-                parentID: parentID,
-                model: model,
-                timeBusyMs: timeBusyMs,
-                timeIdleMs: timeIdleMs,
-                timeUpdatedMs: timeUpdatedMs,
-                outcome: OpenCodeTaskOutcome(rawDatabaseValue: outcomeRaw)
+                id: row.id,
+                rawTitle: row.rawTitle,
+                directory: row.directory,
+                parentID: row.parentID,
+                agent: effectiveAgent,
+                model: row.model,
+                latestPrompt: latestPrompt,
+                timeBusyMs: row.timeBusyMs,
+                timeIdleMs: row.timeIdleMs,
+                timeViewedMs: row.timeViewedMs,
+                timeUpdatedMs: row.timeUpdatedMs,
+                outcome: OpenCodeTaskOutcome(rawDatabaseValue: row.outcomeRaw)
             ))
         }
 
         return items
+    }
+
+    private static func extractJSONStringField(from raw: String, key: String) -> String? {
+        if let data = raw.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let val = obj[key] as? String {
+            return val
+        }
+        // Fast fallback for truncated JSON prefix (substr(data, 1, 512))
+        let needle = "\"\(key)\":\""
+        guard let range = raw.range(of: needle) else { return nil }
+        var out = ""
+        var escaped = false
+        for ch in raw[range.upperBound...] {
+            if escaped {
+                switch ch {
+                case "n": out.append(" ")
+                case "t": out.append(" ")
+                case "\"": out.append("\"")
+                case "\\": out.append("\\")
+                default: out.append(ch)
+                }
+                escaped = false
+                continue
+            }
+            if ch == "\\" {
+                escaped = true
+                continue
+            }
+            if ch == "\"" { break }
+            out.append(ch)
+            if out.count >= 120 { break }
+        }
+        return out.isEmpty ? nil : out
     }
 
     private static func columnText(_ stmt: OpaquePointer, _ index: Int32) -> String {

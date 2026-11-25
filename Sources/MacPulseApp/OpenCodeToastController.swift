@@ -46,11 +46,14 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
     func dismissToast() {
         autoDismissWorkItem?.cancel()
         autoDismissWorkItem = nil
-        toastPanel?.orderOut(nil)
+        if let existing = toastPanel {
+            existing.orderOut(nil)
+            existing.close()
+            toastPanel = nil
+        }
     }
 
     func focusOpenCodeHostApp() {
-        // Smart priority: activate running terminal or OpenCode host app without spawning new ones
         let preferredBundles = [
             "dev.warp.Warp-Stable",
             "ai.opencode.desktop",
@@ -59,7 +62,7 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
             "com.apple.Terminal",
             "com.google.antigravity",
             "com.microsoft.VSCode",
-            "com.todesktop.230313mzl4w4u92" // Cursor
+            "com.todesktop.230313mzl4w4u92"
         ]
         let running = NSWorkspace.shared.runningApplications
         for bid in preferredBundles {
@@ -70,9 +73,9 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    // MARK: - Floating Non-Activating Sci-Fi HUD Toast
+    // MARK: - Floating Non-Activating Sci-Fi HUD Toast (Fresh NSPanel Every Alert)
     private func showFloatingHudToast(for event: OpenCodeCompletionEvent, avoidTopRightOverlap: Bool) {
-        autoDismissWorkItem?.cancel()
+        dismissToast()
 
         let contentView = OpenCodeFloatingToastView(
             event: event,
@@ -85,40 +88,38 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
             }
         )
 
+        let width: CGFloat = 376
+        let height: CGFloat = event.promptSummary != nil ? 108 : 94
         let hosting = NSHostingView(rootView: contentView)
-        let width: CGFloat = 364
-        let height: CGFloat = 96
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
 
-        let panel: NSPanel
-        if let existing = toastPanel {
-            panel = existing
-            panel.contentView = hosting
-        } else {
-            let created = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-                styleMask: [.borderless, .nonactivatingPanel],
-                backing: .buffered,
-                defer: false
-            )
-            created.isFloatingPanel = true
-            created.level = .statusBar
-            created.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-            created.isOpaque = false
-            created.backgroundColor = .clear
-            created.hasShadow = false
-            created.hidesOnDeactivate = false
-            created.ignoresMouseEvents = false
-            created.contentView = hosting
-            toastPanel = created
-            panel = created
-        }
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = false
+        panel.isReleasedWhenClosed = false
+        panel.contentView = hosting
 
-        if let screen = NSScreen.main ?? NSScreen.screens.first {
+        let mouseLoc = NSEvent.mouseLocation
+        let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+
+        if let screen = targetScreen {
             let vf = screen.visibleFrame
             let yPos: CGFloat = avoidTopRightOverlap
-                ? (vf.minY + 18)              // Bottom-right when macOS Notification Center is also enabled
-                : (vf.maxY - height - 16)     // Top-right when HUD toast is the primary banner
+                ? (vf.minY + 20)              // Bottom-right when macOS Notification Center is also enabled
+                : (vf.maxY - height - 16)     // Top-right when HUD toast is primary
             let origin = NSPoint(
                 x: vf.maxX - width - 16,
                 y: yPos
@@ -126,13 +127,14 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
             panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
         }
 
+        toastPanel = panel
         panel.orderFrontRegardless()
 
         let work = DispatchWorkItem { [weak self] in
             self?.dismissToast()
         }
         autoDismissWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 7.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 9.0, execute: work)
     }
 
     // MARK: - Native macOS Notification Center
@@ -142,9 +144,10 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
 
         let content = UNMutableNotificationContent()
         let durationText = OpenCodeMonitor.formatDuration(seconds: event.durationSeconds)
-        content.title = "OpenCode \(event.outcome.displayLabel) • \(durationText)"
-        content.subtitle = event.projectName
-        content.body = event.title
+        let modePrefix = event.modeLabel.map { "\($0) " } ?? ""
+        content.title = "OpenCode \(modePrefix)\(event.outcome.displayLabel) • \(durationText)"
+        content.subtitle = "\(event.projectName) — \(event.title)"
+        content.body = event.promptSummary ?? event.title
         if includeSound {
             content.sound = .default
         }
@@ -185,26 +188,40 @@ private struct OpenCodeFloatingToastView: View {
 
     private var accentColor: Color {
         switch event.outcome {
-        case .succeeded, .unknown: return HudTheme.emerald
-        case .failed: return HudTheme.crimson
-        case .interrupted: return HudTheme.amber
+        case .succeeded, .unknown:
+            return event.modeLabel == "PLAN" ? HudTheme.violet : HudTheme.emerald
+        case .failed:
+            return HudTheme.crimson
+        case .interrupted:
+            return HudTheme.amber
         }
     }
 
     private var statusIcon: String {
         switch event.outcome {
-        case .succeeded, .unknown: return "checkmark.seal.fill"
-        case .failed: return "xmark.octagon.fill"
-        case .interrupted: return "stop.circle.fill"
+        case .succeeded, .unknown:
+            return event.modeLabel == "PLAN" ? "doc.text.magnifyingglass" : "checkmark.seal.fill"
+        case .failed:
+            return "xmark.octagon.fill"
+        case .interrupted:
+            return "stop.circle.fill"
         }
     }
 
+    private var headerTitle: String {
+        if let mode = event.modeLabel {
+            return "OPENCODE \(mode) \(event.outcome.displayLabel.uppercased())"
+        }
+        return "OPENCODE \(event.outcome.displayLabel.uppercased())"
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
+        let height: CGFloat = event.promptSummary != nil ? 108 : 94
+        return HStack(spacing: 10) {
             ZStack {
                 ChamferedRect(cut: 6, cornerRadius: 3)
                     .fill(accentColor.opacity(0.22))
-                    .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(accentColor.opacity(0.7), lineWidth: 1))
+                    .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(accentColor.opacity(0.75), lineWidth: 1))
                     .frame(width: 36, height: 36)
                 Image(systemName: statusIcon)
                     .font(.system(size: 16, weight: .bold))
@@ -213,9 +230,9 @@ private struct OpenCodeFloatingToastView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text("OPENCODE \(event.outcome.displayLabel.uppercased())")
+                    Text(headerTitle)
                         .font(.system(size: 10.5, weight: .black, design: .monospaced))
-                        .tracking(0.6)
+                        .tracking(0.5)
                         .foregroundStyle(accentColor)
                     if event.durationSeconds >= 1 {
                         Text(OpenCodeMonitor.formatDuration(seconds: event.durationSeconds))
@@ -230,7 +247,14 @@ private struct OpenCodeFloatingToastView: View {
                 Text(event.title)
                     .font(.system(size: 11.5, weight: .bold))
                     .foregroundStyle(HudTheme.textPrimary)
-                    .lineLimit(2)
+                    .lineLimit(1)
+
+                if let prompt = event.promptSummary, !prompt.isEmpty {
+                    Text("“\(prompt)”")
+                        .font(.system(size: 10))
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .lineLimit(1)
+                }
 
                 HStack(spacing: 6) {
                     Text(event.projectName)
@@ -242,10 +266,10 @@ private struct OpenCodeFloatingToastView: View {
                         Text("Mở OpenCode ↗")
                             .font(.system(size: 9.5, weight: .bold))
                             .foregroundStyle(HudTheme.textPrimary)
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 7.5)
                             .padding(.vertical, 2.5)
-                            .background(accentColor.opacity(0.24), in: Capsule())
-                            .overlay(Capsule().strokeBorder(accentColor.opacity(0.7), lineWidth: 0.7))
+                            .background(accentColor.opacity(0.26), in: Capsule())
+                            .overlay(Capsule().strokeBorder(accentColor.opacity(0.75), lineWidth: 0.7))
                     }
                     .buttonStyle(.plain)
                 }
@@ -265,14 +289,14 @@ private struct OpenCodeFloatingToastView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(width: 364, height: 96)
+        .frame(width: 376, height: height)
         .background(
             ChamferedRect(cut: 10, cornerRadius: 5)
-                .fill(HudTheme.bgMid.opacity(0.97))
+                .fill(HudTheme.bgMid.opacity(0.98))
         )
         .overlay(
             ChamferedRect(cut: 10, cornerRadius: 5)
-                .strokeBorder(accentColor.opacity(0.80), lineWidth: 1.2)
+                .strokeBorder(accentColor.opacity(0.85), lineWidth: 1.3)
         )
         .overlay(
             HudCornerBracketsShape(length: 9)

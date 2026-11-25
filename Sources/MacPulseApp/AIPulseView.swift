@@ -284,23 +284,40 @@ private struct OpenCodeCommandCard: View {
 
     private func runningSessionRow(_ session: OpenCodeSessionItem, nowMs: Int64) -> some View {
         let elapsed = OpenCodeMonitor.formatDuration(seconds: session.durationSeconds(nowMs: nowMs))
+        let modeColor: Color = session.modeBadgeLabel == "PLAN" ? HudTheme.violet : HudTheme.emerald
         return HStack(spacing: 8) {
             LivePulseDot(color: HudTheme.cyan, isLive: true)
 
-            VStack(alignment: .leading, spacing: 1.5) {
-                Text(session.displayTitle)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(HudTheme.textPrimary)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    if let mode = session.modeBadgeLabel {
+                        Text(mode)
+                            .font(.system(size: 8, weight: .black, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(modeColor.opacity(0.22), in: Capsule())
+                            .foregroundStyle(modeColor)
+                    }
+                    Text(session.displayTitle)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(HudTheme.textPrimary)
+                        .lineLimit(1)
+                }
+                if let prompt = session.cleanedLatestPrompt, prompt != session.displayTitle {
+                    Text("“\(prompt)”")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .lineLimit(1)
+                }
                 HStack(spacing: 6) {
                     Text(session.projectName)
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(HudTheme.cyan)
-                    if let model = session.model, !model.isEmpty {
+                    if let model = session.displayModel, !model.isEmpty {
                         Text("•")
                             .foregroundStyle(HudTheme.textMuted)
                         Text(model)
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
                             .foregroundStyle(HudTheme.textSecondary)
                             .lineLimit(1)
                     }
@@ -328,8 +345,8 @@ private struct OpenCodeCommandCard: View {
         let icon: String
         switch session.outcome {
         case .succeeded, .unknown:
-            color = HudTheme.emerald
-            icon = "checkmark.circle.fill"
+            color = session.modeBadgeLabel == "PLAN" ? HudTheme.violet : HudTheme.emerald
+            icon = session.modeBadgeLabel == "PLAN" ? "doc.text.magnifyingglass" : "checkmark.circle.fill"
         case .failed:
             color = HudTheme.crimson
             icon = "xmark.circle.fill"
@@ -346,15 +363,33 @@ private struct OpenCodeCommandCard: View {
                 .font(.system(size: 11.5, weight: .bold))
                 .foregroundStyle(color)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(session.displayTitle)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(HudTheme.textPrimary)
-                    .lineLimit(1)
-                Text(session.projectName)
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundStyle(HudTheme.textSecondary)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1.5) {
+                HStack(spacing: 5) {
+                    if let mode = session.modeBadgeLabel {
+                        Text(mode)
+                            .font(.system(size: 7.5, weight: .black, design: .monospaced))
+                            .padding(.horizontal, 4.5)
+                            .padding(.vertical, 1)
+                            .background(color.opacity(0.18), in: Capsule())
+                            .foregroundStyle(color)
+                    }
+                    Text(session.displayTitle)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(HudTheme.textPrimary)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 5) {
+                    Text(session.projectName)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(HudTheme.cyan.opacity(0.85))
+                        .lineLimit(1)
+                    if let model = session.displayModel {
+                        Text("• \(model)")
+                            .font(.system(size: 8.5, design: .monospaced))
+                            .foregroundStyle(HudTheme.textMuted)
+                            .lineLimit(1)
+                    }
+                }
             }
 
             Spacer(minLength: 4)
@@ -441,6 +476,12 @@ private struct OpenCodeCommandCard: View {
             // Toggles
             VStack(spacing: 7) {
                 HudToggleRow(
+                    title: "Chỉ theo dõi OpenCode Terminal của bạn",
+                    subtitle: "Tự động lọc sạch các phiên bot ngầm (OpenMausBot / ACP / Gateway) để không báo nhầm.",
+                    isOn: $vm.openCodeConfig.onlyInteractiveSessions,
+                    accent: HudTheme.emerald
+                )
+                HudToggleRow(
                     title: "Phát âm thanh báo ngay khi xong",
                     isOn: $vm.openCodeConfig.playSound,
                     accent: HudTheme.emerald
@@ -452,7 +493,8 @@ private struct OpenCodeCommandCard: View {
                     accent: HudTheme.emerald
                 )
                 HudToggleRow(
-                    title: "Gửi thông báo vào macOS Notification Center",
+                    title: "Gửi thêm vào macOS Notification Center",
+                    subtitle: "Khi bật cả hai, banner HUD sẽ tự chuyển xuống góc dưới-phải để không chồng nhau.",
                     isOn: $vm.openCodeConfig.showSystemNotification,
                     accent: HudTheme.cyan
                 )
