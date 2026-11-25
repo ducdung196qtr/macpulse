@@ -12,6 +12,7 @@ enum HudTheme {
     static let textPrimary   = Color(red: 0.93, green: 0.97, blue: 1.00)  // #EDF7FF
     static let textSecondary = Color(red: 0.58, green: 0.71, blue: 0.87)  // #94B5DE
     static let textMuted     = Color(red: 0.37, green: 0.49, blue: 0.66)  // #5E7DA8
+    static let borderSubtle  = Color(red: 0.20, green: 0.32, blue: 0.48)  // Calm tactical slate border
 
     // Neon holographic signal colors
     static let cyan    = Color(red: 0.00, green: 0.88, blue: 1.00) // #00E0FF
@@ -169,20 +170,40 @@ struct HudCardModifier: ViewModifier {
             .overlay(
                 shape.strokeBorder(
                     LinearGradient(
-                        colors: [accent.opacity(0.55), accent.opacity(0.14), accent.opacity(0.32)],
+                        colors: [accent.opacity(0.45), accent.opacity(0.12), accent.opacity(0.24)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 0.95
+                    lineWidth: 0.85
                 )
             )
             .overlay {
                 if showBrackets {
-                    HudCornerBracketsShape(length: 8)
-                        .stroke(accent.opacity(0.8), style: StrokeStyle(lineWidth: 1.3, lineCap: .square))
+                    HudCornerBracketsShape(length: 7)
+                        .stroke(accent.opacity(0.72), style: StrokeStyle(lineWidth: 1.2, lineCap: .square))
                         .allowsHitTesting(false)
                 }
             }
+    }
+}
+
+// MARK: - Calm Tactical Surface Card (Minimal Noise for Lists & Settings)
+struct CleanCardModifier: ViewModifier {
+    let accent: Color?
+    let cornerRadius: CGFloat
+    let padding: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let strokeColor = accent?.opacity(0.45) ?? HudTheme.borderSubtle.opacity(0.45)
+        content
+            .padding(padding)
+            .background(
+                shape.fill(HudTheme.cardBg.opacity(0.92))
+            )
+            .overlay(
+                shape.strokeBorder(strokeColor, lineWidth: accent != nil ? 0.9 : 0.75)
+            )
     }
 }
 
@@ -196,8 +217,87 @@ extension View {
         modifier(HudCardModifier(accent: accent, chamfer: chamfer, padding: padding, showBrackets: showBrackets))
     }
 
+    func cleanCard(
+        accent: Color? = nil,
+        cornerRadius: CGFloat = 9,
+        padding: CGFloat = 11
+    ) -> some View {
+        modifier(CleanCardModifier(accent: accent, cornerRadius: cornerRadius, padding: padding))
+    }
+
     func telemetryCard(accent: Color? = nil, cornerRadius: CGFloat = 10, padding: CGFloat = 11) -> some View {
         hudCard(accent: accent ?? HudTheme.cyan.opacity(0.65), chamfer: min(10, cornerRadius), padding: padding, showBrackets: accent != nil)
+    }
+}
+
+// MARK: - Reusable Full-Width Tactical Sub-Tab Switcher (Zero Overflow)
+struct HudSegmentItem<ID: Hashable>: Identifiable {
+    let id: ID
+    let title: String
+    var icon: String? = nil
+    var badge: String? = nil
+    var dotColor: Color? = nil
+}
+
+struct HudSegmentedBar<ID: Hashable>: View {
+    let items: [HudSegmentItem<ID>]
+    @Binding var selection: ID
+    var accent: Color = HudTheme.cyan
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items) { item in
+                let active = selection == item.id
+                Button {
+                    selection = item.id
+                } label: {
+                    HStack(spacing: 4.5) {
+                        if let icon = item.icon {
+                            Image(systemName: icon)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(active ? accent : HudTheme.textMuted)
+                        }
+                        Text(item.title)
+                            .font(.system(size: 11, weight: active ? .bold : .medium, design: .rounded))
+                            .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
+                            .lineLimit(1)
+                        if let badge = item.badge, !badge.isEmpty {
+                            Text(badge)
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1)
+                                .background(active ? accent.opacity(0.24) : HudTheme.cardBgHi, in: Capsule())
+                                .foregroundStyle(active ? accent : HudTheme.textMuted)
+                                .lineLimit(1)
+                        }
+                        if let dot = item.dotColor {
+                            Circle()
+                                .fill(dot)
+                                .frame(width: 5.5, height: 5.5)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6.5)
+                    .padding(.horizontal, 6)
+                    .background(
+                        active ? accent.opacity(0.18) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(active ? accent.opacity(0.62) : Color.clear, lineWidth: 0.8)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(HudTheme.insetBg.opacity(0.95), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(HudTheme.borderSubtle.opacity(0.42), lineWidth: 0.75)
+        )
     }
 }
 

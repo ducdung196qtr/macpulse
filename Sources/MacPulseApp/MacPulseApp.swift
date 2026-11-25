@@ -303,8 +303,8 @@ private struct PopoverRootView: View {
         return Button {
             NSApp.activate(ignoringOtherApps: true)
             vm.selectedTab = tab
-            if tab == .cleaner {
-                vm.cleanerFocus = .all
+            if tab == .cleaner && vm.isReplaydStuck {
+                vm.cleanerFocus = .chrome
             }
         } label: {
             HStack(spacing: 4.5) {
@@ -447,7 +447,7 @@ private struct PopoverRootView: View {
 
             // Autopilot Auto-Optimize Status Pill
             Button {
-                vm.cleanerFocus = .all
+                vm.cleanerFocus = .autopilot
                 vm.selectedTab = .cleaner
             } label: {
                 let isOn = vm.autoOptimizeConfig.isEnabled

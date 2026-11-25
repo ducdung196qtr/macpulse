@@ -3,30 +3,28 @@ import MacPulseCore
 
 struct CleanerView: View {
     @ObservedObject var vm: AppViewModel
-    @State private var isRescueManuallyExpanded: Bool = false
-    @State private var isAutopilotSettingsExpanded: Bool = false
+    @State private var collapsedGroups: Set<String> = ["storage"]
 
-    private var visibleFilter: CleanerFocusSection {
-        vm.cleanerFocus
-    }
-
-    private var hasActiveBrowserAlert: Bool {
+    private var hasChromeAlert: Bool {
         vm.isReplaydStuck || vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty || vm.chromeGPUTotalCPU >= 8.0
     }
 
-    private var isRescueExpanded: Bool {
-        hasActiveBrowserAlert || isRescueManuallyExpanded || visibleFilter == .browser
-    }
+    private static let historyDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm dd/MM"
+        return df
+    }()
 
     var body: some View {
         VStack(spacing: 0) {
-            cleanerFilterHeader
+            // Fixed 4-Section Functional Workspace Switcher
+            cleanerWorkspaceBar
                 .padding(.horizontal, 14)
-                .padding(.top, 7)
-                .padding(.bottom, 6)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 11) {
+                VStack(alignment: .leading, spacing: 10) {
                     if let pending = vm.pendingTerminationGroup {
                         InlineConfirmTerminationCard(group: pending, vm: vm)
                     }
@@ -36,424 +34,700 @@ struct CleanerView: View {
                     }
 
                     if let msg = vm.cleanupOutcomeMessage {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(HudTheme.emerald)
-                            Text(msg)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(HudTheme.emerald)
-                            Spacer()
-                            Button {
-                                vm.cleanupOutcomeMessage = nil
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(HudTheme.textSecondary)
+                        outcomeBanner(msg)
+                    }
+
+                    switch vm.cleanerFocus {
+                    case .ssd:
+                        ssdWorkspace
+                    case .chrome:
+                        chromeWorkspace
+                    case .ram:
+                        ramWorkspace
+                    case .autopilot:
+                        autopilotWorkspace
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 2)
+                .padding(.bottom, 14)
+            }
+        }
+        .onAppear {
+            if vm.cleanerFocus == .autopilot {
+                vm.refreshTrackedGUIApps()
+            }
+        }
+        .onChange(of: vm.cleanerFocus) { newSection in
+            if newSection == .autopilot {
+                vm.refreshTrackedGUIApps()
+            }
+        }
+    }
+
+    // MARK: - Top 4-Section Switcher
+    private var cleanerWorkspaceBar: some View {
+        let chromeDot: Color? = vm.isReplaydStuck ? HudTheme.crimson : (hasChromeAlert ? HudTheme.amber : nil)
+        let ssdBadge: String? = vm.totalSafeCacheBytes >= 10 * 1_048_576 ? Formatters.bytes(vm.totalSafeCacheBytes) : nil
+        let ramBadge: String? = vm.estimatedReclaimableRAMBytes >= 100 * 1_048_576 ? Formatters.bytes(vm.estimatedReclaimableRAMBytes) : nil
+
+        let items: [HudSegmentItem<CleanerFocusSection>] = [
+            HudSegmentItem(id: .ssd, title: "Dọn SSD", icon: "internaldrive", badge: ssdBadge),
+            HudSegmentItem(id: .chrome, title: "Sửa Chrome", icon: "lifepreserver", dotColor: chromeDot),
+            HudSegmentItem(id: .ram, title: "RAM", icon: "memorychip", badge: ramBadge),
+            HudSegmentItem(id: .autopilot, title: "Tự động", icon: "bolt.shield", dotColor: vm.autoOptimizeConfig.isEnabled ? HudTheme.emerald : nil)
+        ]
+
+        return HudSegmentedBar(items: items, selection: $vm.cleanerFocus, accent: HudTheme.cyan)
+    }
+
+    private func outcomeBanner(_ msg: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundStyle(HudTheme.emerald)
+            Text(msg)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(HudTheme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button {
+                vm.cleanupOutcomeMessage = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.bold())
+                    .foregroundStyle(HudTheme.textMuted)
+            }
+            .buttonStyle(.plain)
+        }
+        .cleanCard(accent: HudTheme.emerald, cornerRadius: 8, padding: 9)
+    }
+
+    // =========================================================================
+    // MARK: - WORKSPACE 1: DỌN SSD (Cache, Build, AI Garbage, Logs)
+    // =========================================================================
+    private var ssdWorkspace: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Unified SSD Summary & Primary Action Card (No duplicate footer)
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("RÁC AN TOÀN CÓ THỂ DỌN")
+                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                                .foregroundStyle(HudTheme.textSecondary)
+                            if vm.isScanningCleanup {
+                                ProgressView().controlSize(.mini)
                             }
-                            .buttonStyle(.plain)
                         }
-                        .hudCard(accent: HudTheme.emerald, chamfer: 7, padding: 9)
+                        Text(Formatters.bytes(vm.totalSafeCacheBytes))
+                            .font(.system(size: 22, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.emerald)
+                        Text("An toàn 100% — không xoá code, mật khẩu, Extension hay database.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(HudTheme.textMuted)
                     }
 
-                    if visibleFilter == .all {
-                        autopilotOptimizerCard
-                    }
+                    Spacer()
 
-                    heroSummaryCard
-
-                    if visibleFilter == .all || visibleFilter == .browser {
-                        chromeRescueCard
-                    }
-
-                    if visibleFilter == .all || visibleFilter == .ai {
-                        aiSection
-                    }
-
-                    if visibleFilter == .all || visibleFilter == .browser {
-                        browserSection
-                    }
-
-                    if visibleFilter == .all || visibleFilter == .developer {
-                        developerSection
-                    }
-
-                    if visibleFilter == .all || visibleFilter == .logs {
-                        logsSection
-                    }
-
-                    if visibleFilter == .all || visibleFilter == .storage {
-                        storageHeavySection
-                    }
-
-                    if visibleFilter == .all || visibleFilter == .ram {
-                        ramSection
+                    HudButton(
+                        title: vm.isCleaning ? "Đang dọn..." : "Dọn ngay (\(Formatters.bytes(vm.totalSelectedCleanupBytes)))",
+                        icon: "sparkles",
+                        color: HudTheme.emerald,
+                        filled: true,
+                        compact: false,
+                        disabled: vm.isCleaning || vm.totalSelectedCleanupBytes == 0
+                    ) {
+                        vm.runSelectedCleanup()
                     }
                 }
-                .padding(14)
-            }
 
-            Rectangle()
-                .fill(LinearGradient(colors: [.clear, HudTheme.cyan.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing))
-                .frame(height: 0.8)
-            cleanerFooterBar
+                Rectangle().fill(HudTheme.borderSubtle.opacity(0.35)).frame(height: 0.7)
+
+                HStack(spacing: 7) {
+                    HudButton(title: "Chọn tất cả an toàn", color: HudTheme.cyan, filled: false, compact: true) {
+                        vm.selectAllSafe()
+                    }
+                    HudButton(title: "Bỏ chọn", color: HudTheme.textSecondary, filled: false, compact: true) {
+                        vm.deselectAll()
+                    }
+                    Spacer()
+                    HudButton(
+                        title: vm.isScanningCleanup ? "Đang quét..." : "Quét lại SSD",
+                        icon: "arrow.clockwise",
+                        color: HudTheme.textSecondary,
+                        filled: false,
+                        compact: true,
+                        disabled: vm.isScanningCleanup
+                    ) {
+                        vm.scanCleanup()
+                    }
+                }
+            }
+            .hudCard(accent: HudTheme.emerald, chamfer: 10, padding: 11, showBrackets: true)
+
+            // Clean Collapsible Category Accordions
+            cleanupAccordion(
+                key: "ai",
+                icon: "sparkles",
+                title: "Rác AI & Công cụ Dev AI",
+                color: HudTheme.violet,
+                totalBytes: vm.totalAIGarbageBytes,
+                items: vm.aiCandidates
+            )
+            cleanupAccordion(
+                key: "browser",
+                icon: "globe",
+                title: "Cache Trình duyệt",
+                color: HudTheme.cyan,
+                totalBytes: vm.totalBrowserCacheBytes,
+                items: vm.browserCandidates
+            )
+            cleanupAccordion(
+                key: "dev",
+                icon: "hammer.fill",
+                title: "Cache Lập trình & Build",
+                color: HudTheme.amber,
+                totalBytes: vm.totalDeveloperBuildBytes,
+                items: vm.developerCandidates
+            )
+            cleanupAccordion(
+                key: "logs",
+                icon: "doc.text.fill",
+                title: "File Log lớn & Thùng rác",
+                color: HudTheme.amber,
+                totalBytes: vm.totalLogsAndTrashBytes,
+                items: vm.logAndTrashCandidates
+            )
+            cleanupAccordion(
+                key: "storage",
+                icon: "folder.fill",
+                title: "Dữ liệu dung lượng lớn (Chỉ xem Finder)",
+                color: HudTheme.cobalt,
+                totalBytes: vm.totalHeavyStorageBytes,
+                items: vm.storageHeavyCandidates
+            )
         }
     }
 
-    // MARK: - Filter Bar
-    private var cleanerFilterHeader: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                filterButton("Tất cả", section: .all, countText: Formatters.bytes(vm.totalSafeCacheBytes))
-                filterButton("Rác AI", section: .ai, countText: Formatters.bytes(vm.totalAIGarbageBytes))
-                filterButton("Trình duyệt", section: .browser, countText: Formatters.bytes(vm.totalBrowserCacheBytes))
-                filterButton("Lập trình", section: .developer, countText: Formatters.bytes(vm.totalDeveloperBuildBytes))
-                filterButton("Log & Rác", section: .logs, countText: Formatters.bytes(vm.totalLogsAndTrashBytes))
-                filterButton("Bộ nhớ lớn", section: .storage, countText: Formatters.bytes(vm.totalHeavyStorageBytes))
-                filterButton("RAM", section: .ram, countText: Formatters.bytes(vm.estimatedReclaimableRAMBytes))
-            }
-            .padding(3)
-        }
-        .background(HudTheme.insetBg, in: ChamferedRect(cut: 6, cornerRadius: 3))
-        .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(HudTheme.cyan.opacity(0.22), lineWidth: 0.75))
-    }
+    @ViewBuilder
+    private func cleanupAccordion(
+        key: String,
+        icon: String,
+        title: String,
+        color: Color,
+        totalBytes: UInt64,
+        items: [CleanupCandidate]
+    ) -> some View {
+        if !items.isEmpty {
+            let isExpanded = !collapsedGroups.contains(key)
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    if isExpanded {
+                        collapsedGroups.insert(key)
+                    } else {
+                        collapsedGroups.remove(key)
+                    }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: icon)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(color)
+                            .frame(width: 16)
 
-    private func filterButton(_ label: String, section: CleanerFocusSection, countText: String) -> some View {
-        let active = vm.cleanerFocus == section
-        return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                vm.cleanerFocus = section
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: section.icon)
-                    .font(.system(size: 9.5, weight: .bold))
-                    .foregroundStyle(active ? HudTheme.cyan : HudTheme.textMuted)
-                Text(label)
-                    .font(.system(size: 10.5, weight: active ? .bold : .medium))
-                    .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
-                if countText != "0 B" && countText != "0.0 B" {
-                    Text(countText)
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 4.5)
-                        .padding(.vertical, 1)
-                        .background(active ? HudTheme.cyan.opacity(0.24) : HudTheme.cardBg, in: Capsule())
-                        .foregroundStyle(active ? HudTheme.cyan : HudTheme.textMuted)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(active ? HudTheme.cyan.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? HudTheme.cyan.opacity(0.55) : .clear, lineWidth: 0.7))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private static let historyDateFormatter: DateFormatter = {
-        let df = DateFormatter()
-        df.dateFormat = "HH:mm dd/MM"
-        return df
-    }()
-
-    // MARK: - Autopilot Background Auto-Optimizer Card
-    private var autopilotOptimizerCard: some View {
-        let enabled = vm.autoOptimizeConfig.isEnabled
-        let cardAccent: Color = vm.isAutoOptimizing ? HudTheme.cyan : (enabled ? HudTheme.emerald : HudTheme.textMuted)
-        let statusText: String = vm.isAutoOptimizing ? "BOOSTING" : (enabled ? "ONLINE" : "STANDBY")
-        let eligibleIdle = vm.eligibleIdleAppsNow
-
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 9) {
-                ZStack {
-                    ChamferedRect(cut: 6, cornerRadius: 3)
-                        .fill(cardAccent.opacity(0.20))
-                        .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(cardAccent.opacity(0.6), lineWidth: 0.8))
-                        .frame(width: 30, height: 30)
-                    Image(systemName: "bolt.shield.fill")
-                        .foregroundStyle(cardAccent)
-                        .font(.system(size: 13.5, weight: .bold))
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("AUTOPILOT TĂNG TỐC & TỰ DỌN")
-                            .font(.system(size: 11, weight: .black, design: .monospaced))
+                        Text(title)
+                            .font(.system(size: 11.5, weight: .bold))
                             .foregroundStyle(HudTheme.textPrimary)
 
-                        Text(statusText)
-                            .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                            .padding(.horizontal, 5.5)
-                            .padding(.vertical, 1.5)
-                            .background(cardAccent.opacity(0.20), in: Capsule())
-                            .foregroundStyle(cardAccent)
+                        Text("\(items.count)")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(HudTheme.insetBg, in: Capsule())
+                            .foregroundStyle(HudTheme.textMuted)
+
+                        Spacer()
+
+                        Text(Formatters.bytes(totalBytes))
+                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(color)
+
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(HudTheme.textMuted)
                     }
-                    Text("Quét mỗi \(vm.autoOptimizeConfig.intervalHours)h • Cache >\(vm.autoOptimizeConfig.staleCacheDays)d • Tắt app rảnh >\(vm.autoOptimizeConfig.idleAppTimeoutMinutes)p • Hạ ưu tiên nền.")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(HudTheme.cardBg.opacity(0.85), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(HudTheme.borderSubtle.opacity(0.42), lineWidth: 0.75))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    LazyVStack(spacing: 4.5) {
+                        ForEach(items) { item in
+                            CleanupRowView(item: item, vm: vm, maxSizeBytes: vm.maxCandidateSizeBytes)
+                        }
+                    }
+                    .padding(.leading, 4)
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // MARK: - WORKSPACE 2: SỬA CHROME (4 Clear Numbered Modules)
+    // =========================================================================
+    private var chromeWorkspace: some View {
+        let replayd = vm.replaydProcessGroup
+        let isReplaydStuck = vm.isReplaydStuck
+        let stuckCount = vm.stuckChromeRenderers.count
+        let totalStuckCPU = vm.stuckChromeRenderers.reduce(0.0) { $0 + $1.cpuPercent }
+        let chromeGPUCPU = vm.chromeGPUTotalCPU
+        let chromeGPUCount = vm.chromeGPUProcesses.count
+        let totalChromeProcs = vm.processGroups.first(where: { $0.id == "app:Google Chrome" })?.processCount ?? 0
+        let autoGroup = vm.orphanAutomationGroup
+
+        return VStack(alignment: .leading, spacing: 9) {
+            // Concise Isolation Guarantee Strip
+            HStack(spacing: 7) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(HudTheme.emerald)
+                Text("Cô lập an toàn: Giữ nguyên Extension, mật khẩu & tab đang mở. Sửa Chrome thường không chạm bot ngầm.")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(HudTheme.textSecondary)
+                    .lineLimit(2)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(HudTheme.emerald.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(HudTheme.emerald.opacity(0.28), lineWidth: 0.7))
+
+            // 01 :: macOS replayd XPC Storm
+            rescueModuleCard(
+                number: "01",
+                title: "Sửa bão XPC macOS replayd",
+                statusText: {
+                    if let r = replayd, isReplaydStuck {
+                        let niceTag = vm.isReplaydThrottled ? " • NICE+20" : ""
+                        return "\(String(format: "%.0f%%", r.totalCPUPercent)) CPU\(niceTag)"
+                    }
+                    return "ỔN ĐỊNH (0%)"
+                }(),
+                statusColor: isReplaydStuck ? HudTheme.crimson : HudTheme.emerald,
+                highlight: isReplaydStuck,
+                description: isReplaydStuck
+                    ? (vm.isReplaydThrottled
+                        ? "Đã hạ ưu tiên replayd xuống nice +20. Các app khách (Chrome / OpenMausBot / ChatGPT) vẫn đang nối XPC — bấm Restart sạch Chrome & Dừng Bot để cắt hẳn."
+                        : "Tiến trình /usr/libexec/replayd đang kẹt vòng lặp XPC, bóp nghẹt Chrome & OpenMausBot. Bấm reset để khởi tạo lại sạch mà không đóng tab.")
+                    : "Khởi tạo lại dịch vụ macOS replayd khi tiến trình này treo CPU và làm chậm Chrome."
+            ) {
+                HudButton(
+                    title: isReplaydStuck ? "Reset replayd ngay (0 mất tab)" : "Kiểm tra & Reset replayd",
+                    icon: "bolt.shield.fill",
+                    color: isReplaydStuck ? HudTheme.crimson : HudTheme.cyan,
+                    filled: isReplaydStuck,
+                    compact: true,
+                    disabled: vm.isRescuingChrome
+                ) {
+                    vm.restartStuckReplayd(forceAlways: true)
+                }
+            }
+
+            // 02 :: Stuck JS/DOM Tabs & Chrome GPU
+            let hasTabOrGPUIssue = stuckCount > 0 || chromeGPUCPU >= 8.0
+            rescueModuleCard(
+                number: "02",
+                title: "Gỡ tab đơ JS/DOM & Reset GPU Chrome",
+                statusText: {
+                    if stuckCount > 0 && chromeGPUCPU >= 8.0 {
+                        return "\(stuckCount) TAB • GPU \(String(format: "%.0f%%", chromeGPUCPU))"
+                    } else if stuckCount > 0 {
+                        return "\(stuckCount) TAB ĐƠ (\(String(format: "%.0f%%", totalStuckCPU)))"
+                    } else if chromeGPUCPU >= 8.0 {
+                        return "GPU \(String(format: "%.0f%%", chromeGPUCPU)) CPU"
+                    }
+                    return "ỔN ĐỊNH"
+                }(),
+                statusColor: hasTabOrGPUIssue ? HudTheme.amber : HudTheme.emerald,
+                highlight: hasTabOrGPUIssue,
+                description: "Gỡ tab bị vòng lặp JS/DOM (hiện Aw Snap để F5) hoặc Reset tiến trình GPU Chrome (tự hồi trong <0.5s, 0 mất tab)."
+            ) {
+                HStack(spacing: 7) {
+                    HudButton(
+                        title: stuckCount > 0 ? "Gỡ \(stuckCount) tab đơ" : "Gỡ tab đơ JS/DOM",
+                        icon: "bolt.fill",
+                        color: stuckCount > 0 ? HudTheme.amber : HudTheme.cyan,
+                        filled: stuckCount > 0,
+                        compact: true
+                    ) {
+                        vm.killStuckChromeRenderers(forceAll: false)
+                    }
+
+                    if chromeGPUCount > 0 {
+                        HudButton(
+                            title: "Reset GPU Chrome",
+                            icon: "cpu",
+                            color: chromeGPUCPU >= 8.0 ? HudTheme.amber : HudTheme.cyan,
+                            filled: chromeGPUCPU >= 8.0,
+                            compact: true
+                        ) {
+                            vm.resetChromeGPUProcess()
+                        }
+                    }
+
+                    if totalChromeProcs > 0 {
+                        HudButton(title: "Gỡ mọi renderer", color: HudTheme.textSecondary, filled: false, compact: true) {
+                            vm.killStuckChromeRenderers(forceAll: true)
+                        }
+                    }
+                }
+            }
+
+            // 03 :: Headless Bot & Automation Rescue
+            rescueModuleCard(
+                number: "03",
+                title: "Dừng cụm Bot ngầm (OpenMausBot / MCP)",
+                statusText: autoGroup.map { "\($0.processCount) PROC • \(Formatters.bytes($0.totalRSSBytes))" } ?? "KHÔNG CÓ",
+                statusColor: autoGroup != nil ? HudTheme.amber : HudTheme.textMuted,
+                highlight: autoGroup != nil,
+                description: "Dừng sạch các tiến trình Chrome headless chạy ngầm và gỡ khoá profile tự động mà không đụng Chrome thường."
+            ) {
+                HudButton(
+                    title: autoGroup != nil ? "Dừng & Reset cụm Bot" : "Reset sạch Automation",
+                    icon: "arrow.counterclockwise.circle.fill",
+                    color: autoGroup != nil ? HudTheme.amber : HudTheme.cyan,
+                    filled: autoGroup != nil,
+                    compact: true,
+                    disabled: vm.isRescuingChrome || vm.isCleaning
+                ) {
+                    vm.resetBrowserAutomation()
+                }
+            }
+
+            // 04 :: Clean Chrome Restart
+            rescueModuleCard(
+                number: "04",
+                title: "Khởi động lại sạch Google Chrome",
+                statusText: totalChromeProcs > 0 ? "\(totalChromeProcs) TIẾN TRÌNH" : "CHƯA MỞ",
+                statusColor: HudTheme.cobalt,
+                highlight: false,
+                description: "Đóng êm 2.4s để lưu trọn phiên tab, tự reset replayd, gỡ SingletonLock & dọn OS cache tạm rồi mở lại Chrome."
+            ) {
+                HStack(spacing: 7) {
+                    HudButton(
+                        title: vm.isRescuingChrome ? "Đang xử lý..." : "Restart sạch Chrome",
+                        icon: "arrow.clockwise",
+                        color: HudTheme.cobalt,
+                        filled: true,
+                        compact: true,
+                        disabled: vm.isRescuingChrome || vm.isCleaning
+                    ) {
+                        vm.rescueAndCleanChrome(relaunch: true)
+                    }
+
+                    HudButton(
+                        title: "Chỉ tắt & gỡ lock",
+                        color: HudTheme.textSecondary,
+                        filled: false,
+                        compact: true,
+                        disabled: vm.isRescuingChrome || vm.isCleaning
+                    ) {
+                        vm.rescueAndCleanChrome(relaunch: false)
+                    }
+                }
+            }
+        }
+    }
+
+    private func rescueModuleCard<Actions: View>(
+        number: String,
+        title: String,
+        statusText: String,
+        statusColor: Color,
+        highlight: Bool,
+        description: String,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Text(number)
+                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                    .padding(.horizontal, 5.5)
+                    .padding(.vertical, 2)
+                    .background((highlight ? statusColor : HudTheme.cyan).opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+                    .foregroundStyle(highlight ? statusColor : HudTheme.cyan)
+
+                Text(title)
+                    .font(.system(size: 11.5, weight: .bold))
+                    .foregroundStyle(HudTheme.textPrimary)
+                    .lineLimit(1)
 
                 Spacer(minLength: 4)
 
-                // Quick Master Switch
-                Button {
-                    vm.autoOptimizeConfig.isEnabled.toggle()
-                } label: {
-                    ZStack(alignment: enabled ? .trailing : .leading) {
-                        Capsule()
-                            .fill(enabled ? HudTheme.emerald.opacity(0.28) : HudTheme.insetBg)
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(enabled ? HudTheme.emerald.opacity(0.85) : HudTheme.textMuted.opacity(0.45), lineWidth: 1)
-                            )
-                            .frame(width: 36, height: 19)
-                        Circle()
-                            .fill(enabled ? HudTheme.emerald : HudTheme.textMuted)
-                            .frame(width: 13, height: 13)
-                            .padding(.horizontal, 3)
-                    }
-                }
-                .buttonStyle(.plain)
-                .help(enabled ? "Tắt chế độ Tự động tối ưu ngầm" : "Bật chế độ Tự động tối ưu ngầm")
+                Text(statusText)
+                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(statusColor.opacity(0.15), in: Capsule())
+                    .foregroundStyle(statusColor)
             }
 
-            // Compact 3-cell HUD Telemetry Row
-            HStack(spacing: 7) {
-                autopilotMetricCell(
-                    label: "ĐÃ TỰ DỌN SSD",
-                    value: Formatters.bytes(vm.autoOptimizeLifetimeFreedBytes),
-                    accent: HudTheme.emerald
-                )
-                autopilotMetricCell(
-                    label: "APP RẢNH / RAM",
-                    value: vm.autoOptimizeTotalIdleAppsClosed > 0
-                        ? "\(vm.autoOptimizeTotalIdleAppsClosed) app • \(Formatters.bytes(vm.autoOptimizeLifetimeReclaimedRAMBytes))"
-                        : "\(eligibleIdle.count) sẵn sàng",
-                    accent: eligibleIdle.isEmpty ? HudTheme.cyan : HudTheme.amber
-                )
-                autopilotMetricCell(
-                    label: "LỊCH KẾ TIẾP",
-                    value: vm.autoOptimizeNextRunLabel,
-                    accent: enabled ? HudTheme.textPrimary : HudTheme.textMuted
-                )
-            }
+            Text(description)
+                .font(.system(size: 10.5))
+                .foregroundStyle(HudTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            // Action Bar
-            HStack(spacing: 7) {
-                HudButton(
-                    title: vm.isAutoOptimizing ? "Đang tăng tốc..." : "Turbo Boost ngay",
-                    icon: "bolt.fill",
-                    color: HudTheme.emerald,
-                    filled: true,
-                    compact: true,
-                    disabled: vm.isAutoOptimizing || vm.isCleaning || vm.isRescuingChrome
-                ) {
-                    vm.runAutoOptimizeNow()
-                }
-
-                if !eligibleIdle.isEmpty {
-                    HudButton(
-                        title: "Tắt \(eligibleIdle.count) app rảnh",
-                        icon: "moon.zzz.fill",
-                        color: HudTheme.amber,
-                        filled: false,
-                        compact: true
-                    ) {
-                        vm.closeIdleAppsNow()
-                    }
-                }
-
-                HudButton(
-                    title: isAutopilotSettingsExpanded ? "Ẩn cài đặt" : "Cấu hình & App rảnh",
-                    icon: isAutopilotSettingsExpanded ? "chevron.up" : "slider.horizontal.3",
-                    color: HudTheme.cyan,
-                    filled: false,
-                    compact: true
-                ) {
-                    vm.refreshTrackedGUIApps()
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        isAutopilotSettingsExpanded.toggle()
-                    }
-                }
-
-                Spacer()
-
-                Text("\(vm.autoOptimizeConfig.intervalHours)H • >\(vm.autoOptimizeConfig.staleCacheDays)D")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(HudTheme.textMuted)
-            }
-
-            if isAutopilotSettingsExpanded {
-                autopilotSettingsPanel
-            }
+            actions()
         }
-        .hudCard(accent: cardAccent, chamfer: 10, padding: 11, showBrackets: true)
+        .cleanCard(accent: highlight ? statusColor : nil, cornerRadius: 9, padding: 10)
     }
 
-    private func autopilotMetricCell(label: String, value: String, accent: Color) -> some View {
+    // =========================================================================
+    // MARK: - WORKSPACE 3: GIẢI PHÓNG RAM
+    // =========================================================================
+    private var ramWorkspace: some View {
+        let eligibleIdle = vm.eligibleIdleAppsNow
+
+        return VStack(alignment: .leading, spacing: 10) {
+            // RAM Summary Card
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("BỘ NHỚ RAM HIỆN TẠI")
+                            .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.textSecondary)
+                        if let mem = vm.snapshot?.memory {
+                            Text(String(format: "%.1f GB trống / %.0f GB", mem.availableGB, mem.totalGB))
+                                .font(.system(size: 19, weight: .black, design: .monospaced))
+                                .foregroundStyle(mem.compressedGB >= 5.0 ? HudTheme.crimson : HudTheme.cyan)
+                            Text(String(format: "RAM nén: %.1f GB • Swap SSD: %.1f GB • Có thể thu hồi ~%@", mem.compressedGB, mem.swapUsedGB, Formatters.bytes(vm.estimatedReclaimableRAMBytes)))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(HudTheme.textMuted)
+                        }
+                    }
+                    Spacer()
+                }
+
+                if let mem = vm.snapshot?.memory {
+                    SegmentedMemoryBar(memory: mem, height: 6)
+                }
+
+                HStack(spacing: 7) {
+                    HudButton(title: "Soi & đóng tab trình duyệt", icon: "macwindow", color: HudTheme.cyan, filled: true, compact: true) {
+                        vm.scanBrowserTabs()
+                    }
+
+                    if !eligibleIdle.isEmpty {
+                        HudButton(title: "Tắt \(eligibleIdle.count) app rảnh", icon: "moon.zzz.fill", color: HudTheme.amber, filled: false, compact: true) {
+                            vm.closeIdleAppsNow()
+                        }
+                    }
+
+                    if let orphan = vm.orphanAutomationGroup {
+                        HudButton(title: "Dừng Bot (\(Formatters.bytes(orphan.totalRSSBytes)))", color: HudTheme.amber, filled: false, compact: true) {
+                            vm.resetBrowserAutomation()
+                        }
+                    }
+                }
+            }
+            .hudCard(accent: HudTheme.cyan, chamfer: 10, padding: 11, showBrackets: true)
+
+            // Reclaimable Apps List
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("ỨNG DỤNG ĐANG CHIẾM RAM NHIỀU NHẤT")
+                        .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
+                    Spacer()
+                    Text("Bấm tên để xem tác động")
+                        .font(.system(size: 9))
+                        .foregroundStyle(HudTheme.textMuted)
+                }
+                .padding(.horizontal, 2)
+
+                if vm.ramReclaimableGroups.isEmpty {
+                    Text("Không có ứng dụng nào chiếm RAM bất thường.")
+                        .font(.caption)
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .cleanCard(padding: 14)
+                } else {
+                    LazyVStack(spacing: 4.5) {
+                        ForEach(vm.ramReclaimableGroups) { group in
+                            ProcessRowView(group: group, vm: vm, highlightRAM: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // MARK: - WORKSPACE 4: TỰ ĐỘNG (AUTOPILOT)
+    // =========================================================================
+    private var autopilotWorkspace: some View {
+        let enabled = vm.autoOptimizeConfig.isEnabled
+        let cardAccent: Color = vm.isAutoOptimizing ? HudTheme.cyan : (enabled ? HudTheme.emerald : HudTheme.textMuted)
+        let eligibleIdle = vm.eligibleIdleAppsNow
+
+        return VStack(alignment: .leading, spacing: 10) {
+            // 1. Master Control Card
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("AUTOPILOT TỰ ĐỘNG TỐI ƯU")
+                                .font(.system(size: 11.5, weight: .black, design: .monospaced))
+                                .foregroundStyle(HudTheme.textPrimary)
+                            Text(vm.isAutoOptimizing ? "ĐANG CHẠY" : (enabled ? "ĐANG BẬT" : "ĐANG TẮT"))
+                                .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(cardAccent.opacity(0.18), in: Capsule())
+                                .foregroundStyle(cardAccent)
+                        }
+                        Text("Tự dọn cache cũ, đóng êm app rảnh & hạ ưu tiên nền mà không ảnh hưởng công việc.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(HudTheme.textSecondary)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        vm.autoOptimizeConfig.isEnabled.toggle()
+                    } label: {
+                        ZStack(alignment: enabled ? .trailing : .leading) {
+                            Capsule()
+                                .fill(enabled ? HudTheme.emerald.opacity(0.28) : HudTheme.insetBg)
+                                .overlay(Capsule().strokeBorder(enabled ? HudTheme.emerald.opacity(0.85) : HudTheme.textMuted.opacity(0.45), lineWidth: 1))
+                                .frame(width: 38, height: 20)
+                            Circle()
+                                .fill(enabled ? HudTheme.emerald : HudTheme.textMuted)
+                                .frame(width: 14, height: 14)
+                                .padding(.horizontal, 3)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 7) {
+                    autopilotStatCell(label: "ĐÃ DỌN SSD", value: Formatters.bytes(vm.autoOptimizeLifetimeFreedBytes), accent: HudTheme.emerald)
+                    autopilotStatCell(
+                        label: "APP RẢNH",
+                        value: vm.autoOptimizeTotalIdleAppsClosed > 0
+                            ? "\(vm.autoOptimizeTotalIdleAppsClosed) app"
+                            : "\(eligibleIdle.count) sẵn sàng",
+                        accent: eligibleIdle.isEmpty ? HudTheme.cyan : HudTheme.amber
+                    )
+                    autopilotStatCell(label: "LỊCH KẾ TIẾP", value: vm.autoOptimizeNextRunLabel, accent: enabled ? HudTheme.textPrimary : HudTheme.textMuted)
+                }
+
+                HStack(spacing: 7) {
+                    HudButton(
+                        title: vm.isAutoOptimizing ? "Đang tối ưu..." : "Chạy tối ưu ngay",
+                        icon: "bolt.fill",
+                        color: HudTheme.emerald,
+                        filled: true,
+                        compact: true,
+                        disabled: vm.isAutoOptimizing || vm.isCleaning || vm.isRescuingChrome
+                    ) {
+                        vm.runAutoOptimizeNow()
+                    }
+
+                    if !eligibleIdle.isEmpty {
+                        HudButton(title: "Tắt \(eligibleIdle.count) app rảnh ngay", icon: "moon.zzz.fill", color: HudTheme.amber, filled: false, compact: true) {
+                            vm.closeIdleAppsNow()
+                        }
+                    }
+                }
+            }
+            .hudCard(accent: cardAccent, chamfer: 10, padding: 11, showBrackets: true)
+
+            // 2. Schedule & Threshold Selectors
+            VStack(alignment: .leading, spacing: 7) {
+                Text("LỊCH TRÌNH & NGƯỠNG TỰ ĐỘNG")
+                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
+
+                autopilotIntSelector(title: "Chu kỳ chạy", options: [(1, "1h"), (2, "2h"), (6, "6h"), (12, "12h"), (24, "24h")], selection: $vm.autoOptimizeConfig.intervalHours, accent: HudTheme.cyan)
+                autopilotIntSelector(title: "Xoá cache cũ hơn", options: [(1, "1 ngày"), (3, "3 ngày"), (7, "7 ngày"), (14, "14 ngày")], selection: $vm.autoOptimizeConfig.staleCacheDays, accent: HudTheme.emerald)
+                autopilotIntSelector(title: "Tắt app rảnh sau", options: [(30, "30p"), (60, "1h"), (120, "2h"), (240, "4h")], selection: $vm.autoOptimizeConfig.idleAppTimeoutMinutes, accent: HudTheme.violet)
+                autopilotDoubleSelector(title: "Chạy sớm khi SSD <", options: [(20.0, "20 GB"), (30.0, "30 GB"), (40.0, "40 GB")], selection: $vm.autoOptimizeConfig.lowDiskTriggerGB, accent: HudTheme.amber)
+            }
+            .cleanCard(padding: 10)
+
+            // 3. Concise Automation Rules
+            VStack(alignment: .leading, spacing: 8) {
+                Text("QUY TẮC TỐI ƯU")
+                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
+
+                HudToggleRow(title: "Tự chữa bão macOS replayd (≥ 75% CPU)", subtitle: "Reset sạch hoặc hạ nice +20 — không đóng tab Chrome.", isOn: $vm.autoOptimizeConfig.autoHealStuckReplayd, accent: HudTheme.crimson)
+                HudToggleRow(title: "Tự đóng êm app lâu không dùng (Cmd+Q)", subtitle: "Chỉ đóng khi rảnh & CPU < 2%, bỏ qua app công việc & file chưa lưu.", isOn: $vm.autoOptimizeConfig.autoCloseIdleApps, accent: HudTheme.violet)
+                HudToggleRow(title: "Hạ ưu tiên nền Spotlight / Photos / iCloud", subtitle: "Đặt nice +10 khi chạy nền ≥ 5% CPU (không tắt tiến trình).", isOn: $vm.autoOptimizeConfig.autoThrottleBackgroundHogs, accent: HudTheme.cyan)
+                HudToggleRow(title: "Dọn cache quá hạn (Trình duyệt, AI, Dev)", isOn: $vm.autoOptimizeConfig.autoCleanStaleCaches, accent: HudTheme.emerald)
+                HudToggleRow(title: "Dọn rác cập nhật ShipIt, OpenMausBot & QuickLook", isOn: $vm.autoOptimizeConfig.autoCleanUpdaterGarbage, accent: HudTheme.emerald)
+                HudToggleRow(title: "Cắt rỗng log LocalWP phình to (> 15 MB)", isOn: $vm.autoOptimizeConfig.autoTruncateOversizedLogs, accent: HudTheme.cyan)
+                HudToggleRow(title: "Dọn thư mục /tmp bot mồ côi (Playwright / MCP)", isOn: $vm.autoOptimizeConfig.autoCleanOrphanTempProfiles, accent: HudTheme.cyan)
+            }
+            .cleanCard(padding: 10)
+
+            // 4. Work-Safe App Protection Matrix
+            if !vm.trackedGUIApps.isEmpty {
+                let now = Date()
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("BẢO VỆ ỨNG DỤNG CÔNG VIỆC")
+                            .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.textSecondary)
+                        Spacer()
+                        Text("Bấm nút để khoá / cho phép tự tắt")
+                            .font(.system(size: 9))
+                            .foregroundStyle(HudTheme.textMuted)
+                    }
+
+                    LazyVStack(spacing: 4) {
+                        ForEach(vm.trackedGUIApps.prefix(10)) { app in
+                            idleAppRow(app, now: now)
+                        }
+                    }
+                }
+                .cleanCard(padding: 10)
+            }
+
+            // 5. Recent History
+            if !vm.autoOptimizeHistory.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("NHẬT KÝ GẦN ĐÂY")
+                        .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
+
+                    ForEach(vm.autoOptimizeHistory.prefix(4)) { rec in
+                        autopilotHistoryRow(rec)
+                    }
+                }
+                .cleanCard(padding: 10)
+            }
+        }
+    }
+
+    private func autopilotStatCell(label: String, value: String, accent: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .tracking(0.5)
                 .foregroundStyle(HudTheme.textMuted)
             Text(value)
-                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .font(.system(size: 11.5, weight: .black, design: .monospaced))
                 .foregroundStyle(accent)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
-    }
-
-    private var autopilotSettingsPanel: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Rectangle()
-                .fill(HudTheme.cyan.opacity(0.18))
-                .frame(height: 0.7)
-
-            // Parameter Selectors
-            VStack(alignment: .leading, spacing: 6) {
-                autopilotIntSelector(
-                    title: "Chu kỳ quét tự động",
-                    options: [(1, "1 giờ"), (2, "2 giờ"), (6, "6 giờ"), (12, "12 giờ"), (24, "24 giờ")],
-                    selection: $vm.autoOptimizeConfig.intervalHours,
-                    accent: HudTheme.cyan
-                )
-                autopilotIntSelector(
-                    title: "Xoá cache cũ hơn",
-                    options: [(1, "1 ngày"), (3, "3 ngày"), (7, "7 ngày"), (14, "14 ngày")],
-                    selection: $vm.autoOptimizeConfig.staleCacheDays,
-                    accent: HudTheme.emerald
-                )
-                autopilotIntSelector(
-                    title: "Tự tắt app rảnh sau",
-                    options: [(30, "30p"), (60, "1 giờ"), (120, "2 giờ"), (240, "4 giờ")],
-                    selection: $vm.autoOptimizeConfig.idleAppTimeoutMinutes,
-                    accent: HudTheme.violet
-                )
-                autopilotDoubleSelector(
-                    title: "Tự kích hoạt khi SSD <",
-                    options: [(20.0, "20 GB"), (30.0, "30 GB"), (40.0, "40 GB")],
-                    selection: $vm.autoOptimizeConfig.lowDiskTriggerGB,
-                    accent: HudTheme.amber
-                )
-            }
-            .padding(8)
-            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
-
-            // 7 Granular Rule Switches
-            VStack(spacing: 7) {
-                HudToggleRow(
-                    title: "Tự chữa lỗi treo macOS replayd (≥ 75% CPU bóp Chrome)",
-                    subtitle: "Phát hiện bão XPC (_Xmach_notify_port_destroyed) và restart replayd ngay kể cả khi CPU tổng đang cao — 0 mất tab.",
-                    isOn: $vm.autoOptimizeConfig.autoHealStuckReplayd,
-                    accent: HudTheme.crimson
-                )
-                HudToggleRow(
-                    title: "Tự đóng êm ứng dụng lâu không dùng (Cmd+Q an toàn)",
-                    subtitle: "Chỉ đóng khi không dùng ≥ \(vm.autoOptimizeConfig.idleAppTimeoutMinutes)p & CPU < 2%. Tự bảo vệ công việc & không ép tắt file chưa lưu.",
-                    isOn: $vm.autoOptimizeConfig.autoCloseIdleApps,
-                    accent: HudTheme.violet
-                )
-                HudToggleRow(
-                    title: "Hạ ưu tiên tiến trình nền ngốn CPU (Spotlight / Photos / iCloud)",
-                    subtitle: "Đặt nice +10 cho tác vụ chỉ mục/đồng bộ chạy nền ≥ 5% CPU để thao tác luôn mượt (không tắt app).",
-                    isOn: $vm.autoOptimizeConfig.autoThrottleBackgroundHogs,
-                    accent: HudTheme.cyan
-                )
-                HudToggleRow(
-                    title: "Dọn cache cũ quá hạn (Trình duyệt, AI, Dev)",
-                    subtitle: "Chỉ xoá tệp không dùng quá \(vm.autoOptimizeConfig.staleCacheDays) ngày trong ~/Library/Caches & .npm/.cache.",
-                    isOn: $vm.autoOptimizeConfig.autoCleanStaleCaches,
-                    accent: HudTheme.emerald
-                )
-                HudToggleRow(
-                    title: "Dọn rác cập nhật ShipIt, OpenMausBot & QuickLook",
-                    subtitle: "Tự dọn bản vá/update cũ và bộ đệm ảnh xem nhanh Finder.",
-                    isOn: $vm.autoOptimizeConfig.autoCleanUpdaterGarbage,
-                    accent: HudTheme.emerald
-                )
-                HudToggleRow(
-                    title: "Tự cắt rỗng file log LocalWP phình to (>15 MB)",
-                    subtitle: "Truncate trực tiếp giữ nguyên file, không ảnh hưởng website hay database.",
-                    isOn: $vm.autoOptimizeConfig.autoTruncateOversizedLogs,
-                    accent: HudTheme.cyan
-                )
-                HudToggleRow(
-                    title: "Dọn thư mục /tmp bot mồ côi (Playwright / agent-browser)",
-                    subtitle: "Chỉ xoá thư mục cũ >30p không có tiến trình nào đang sử dụng.",
-                    isOn: $vm.autoOptimizeConfig.autoCleanOrphanTempProfiles,
-                    accent: HudTheme.cyan
-                )
-            }
-            .padding(9)
-            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
-
-            // Interactive Idle App & Work-Safety Whitelist Matrix
-            if !vm.trackedGUIApps.isEmpty {
-                idleAppsProtectionSection
-            }
-
-            // Safety Guardrail Banner
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.shield.fill")
-                    .foregroundStyle(HudTheme.emerald)
-                    .font(.caption)
-                Text("Bảo vệ tuyệt đối công việc: Tự hoãn khi CPU ≥ 65%. Mặc định khoá bảo vệ Chrome, Warp, Terminal, Antigravity, LocalWP, OpenMausBot, Slack, Telegram, Zalo & Remote/VPS. Chỉ gửi Cmd+Q lịch sự (không ép tắt mất file).")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(HudTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(HudTheme.emerald.opacity(0.09), in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.emerald.opacity(0.30), lineWidth: 0.7))
-
-            // Recent History
-            if !vm.autoOptimizeHistory.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("NHẬT KÝ TỐI ƯU GẦN ĐÂY")
-                        .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                        .tracking(0.6)
-                        .foregroundStyle(HudTheme.textMuted)
-
-                    ForEach(vm.autoOptimizeHistory.prefix(4)) { rec in
-                        autopilotHistoryRow(rec)
-                    }
-                }
-            }
-        }
-    }
-
-    private var idleAppsProtectionSection: some View {
-        let now = Date()
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text("ỨNG DỤNG ĐANG MỞ & BẢO VỆ CÔNG VIỆC")
-                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                    .tracking(0.6)
-                    .foregroundStyle(HudTheme.violet)
-                Spacer()
-                Text("Bấm nút khiên để khoá/mở tự tắt")
-                    .font(.system(size: 8.5))
-                    .foregroundStyle(HudTheme.textMuted)
-            }
-
-            LazyVStack(spacing: 4) {
-                ForEach(vm.trackedGUIApps.prefix(10)) { app in
-                    idleAppRow(app, now: now)
-                }
-            }
-        }
-        .padding(8)
-        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.violet.opacity(0.28), lineWidth: 0.7))
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private func idleAppRow(_ app: TrackedGUIApp, now: Date) -> some View {
@@ -462,16 +736,7 @@ struct CleanerView: View {
         let isSystemLocked = (app.bundleID == "com.apple.finder" || app.bundleID == "com.ducdung.MacPulse")
         let isEligible = !isProtected && !app.isFrontmost && app.cpuPercent < 2.0 && idleMins >= vm.autoOptimizeConfig.idleAppTimeoutMinutes
 
-        let idleText: String
-        if app.isFrontmost {
-            idleText = "Đang dùng"
-        } else if idleMins == 0 {
-            idleText = "Vừa dùng"
-        } else if idleMins >= 60 {
-            idleText = "Rảnh \(idleMins / 60)h \(idleMins % 60)p"
-        } else {
-            idleText = "Rảnh \(idleMins)p"
-        }
+        let idleText: String = app.isFrontmost ? "Đang dùng" : (idleMins == 0 ? "Vừa dùng" : (idleMins >= 60 ? "Rảnh \(idleMins / 60)h\(idleMins % 60)p" : "Rảnh \(idleMins)p"))
 
         return HStack(spacing: 7) {
             Circle()
@@ -484,14 +749,14 @@ struct CleanerView: View {
                 .lineLimit(1)
 
             Text(idleText)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(isEligible ? HudTheme.amber : HudTheme.textMuted)
 
             Spacer(minLength: 4)
 
             if app.rssBytes > 0 {
                 Text(Formatters.bytes(app.rssBytes))
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(HudTheme.textSecondary)
             }
 
@@ -502,30 +767,23 @@ struct CleanerView: View {
                     Image(systemName: isProtected ? "lock.shield.fill" : "moon.zzz.fill")
                         .font(.system(size: 8.5, weight: .bold))
                     Text(isProtected ? "Bảo vệ" : "Tự tắt")
-                        .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                 }
-                .padding(.horizontal, 6)
+                .padding(.horizontal, 6.5)
                 .padding(.vertical, 2.5)
-                .background((isProtected ? HudTheme.emerald : HudTheme.violet).opacity(0.18), in: Capsule())
-                .overlay(Capsule().strokeBorder((isProtected ? HudTheme.emerald : HudTheme.violet).opacity(0.55), lineWidth: 0.65))
+                .background((isProtected ? HudTheme.emerald : HudTheme.violet).opacity(0.16), in: Capsule())
                 .foregroundStyle(isProtected ? HudTheme.emerald : HudTheme.violet)
             }
             .buttonStyle(.plain)
             .disabled(isSystemLocked)
-            .opacity(isSystemLocked ? 0.55 : 1.0)
-            .help(isProtected ? "Đang bảo vệ (không bao giờ tự tắt) — bấm để cho phép tự tắt khi rảnh" : "Cho phép tự tắt êm khi rảnh — bấm để khoá bảo vệ công việc")
+            .opacity(isSystemLocked ? 0.5 : 1.0)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4.5)
-        .background(HudTheme.cardBg.opacity(0.7), in: RoundedRectangle(cornerRadius: 5))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
     }
 
-    private func autopilotIntSelector(
-        title: String,
-        options: [(Int, String)],
-        selection: Binding<Int>,
-        accent: Color
-    ) -> some View {
+    private func autopilotIntSelector(title: String, options: [(Int, String)], selection: Binding<Int>, accent: Color) -> some View {
         HStack {
             Text(title)
                 .font(.system(size: 10.5, weight: .medium))
@@ -538,11 +796,11 @@ struct CleanerView: View {
                         selection.wrappedValue = val
                     } label: {
                         Text(label)
-                            .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
-                            .padding(.horizontal, 6.5)
-                            .padding(.vertical, 3)
-                            .background(active ? accent.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? accent.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
+                            .font(.system(size: 9.5, weight: active ? .bold : .medium, design: .monospaced))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(active ? accent.opacity(0.22) : HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? accent.opacity(0.75) : HudTheme.borderSubtle.opacity(0.35), lineWidth: 0.7))
                             .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
                     }
                     .buttonStyle(.plain)
@@ -551,12 +809,7 @@ struct CleanerView: View {
         }
     }
 
-    private func autopilotDoubleSelector(
-        title: String,
-        options: [(Double, String)],
-        selection: Binding<Double>,
-        accent: Color
-    ) -> some View {
+    private func autopilotDoubleSelector(title: String, options: [(Double, String)], selection: Binding<Double>, accent: Color) -> some View {
         HStack {
             Text(title)
                 .font(.system(size: 10.5, weight: .medium))
@@ -569,11 +822,11 @@ struct CleanerView: View {
                         selection.wrappedValue = val
                     } label: {
                         Text(label)
-                            .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
-                            .padding(.horizontal, 6.5)
-                            .padding(.vertical, 3)
-                            .background(active ? accent.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? accent.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
+                            .font(.system(size: 9.5, weight: active ? .bold : .medium, design: .monospaced))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(active ? accent.opacity(0.22) : HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? accent.opacity(0.75) : HudTheme.borderSubtle.opacity(0.35), lineWidth: 0.7))
                             .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
                     }
                     .buttonStyle(.plain)
@@ -593,13 +846,13 @@ struct CleanerView: View {
         return HStack(spacing: 6) {
             Text(rec.trigger.rawValue.uppercased())
                 .font(.system(size: 7.5, weight: .black, design: .monospaced))
-                .padding(.horizontal, 4.5)
+                .padding(.horizontal, 5)
                 .padding(.vertical, 1.5)
                 .background(badgeColor.opacity(0.18), in: Capsule())
                 .foregroundStyle(badgeColor)
 
             Text(Self.historyDateFormatter.string(from: rec.timestamp))
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(HudTheme.textMuted)
 
             Text(rec.summary)
@@ -610,565 +863,13 @@ struct CleanerView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4.5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
         .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
-    }
-
-    // MARK: - Hero Telemetry Summary
-    private var heroSummaryCard: some View {
-        VStack(spacing: 9) {
-            HStack(spacing: 9) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundStyle(HudTheme.violet)
-                        Text("RÁC AN TOÀN SSD")
-                            .font(.system(size: 9, weight: .black, design: .monospaced))
-                            .tracking(0.6)
-                            .foregroundStyle(HudTheme.textSecondary)
-                        Spacer()
-                        if vm.isScanningCleanup {
-                            ProgressView().controlSize(.mini)
-                        }
-                    }
-                    Text(Formatters.bytes(vm.totalSafeCacheBytes))
-                        .font(.system(size: 19, weight: .black, design: .monospaced))
-                        .foregroundStyle(HudTheme.violet)
-                    Text("Cache AI, trình duyệt & build — 0% mất code/tài khoản")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .hudCard(accent: HudTheme.violet, chamfer: 9, padding: 10, showBrackets: true)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "memorychip")
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundStyle(HudTheme.cyan)
-                        Text("RAM KHẢ DỤNG")
-                            .font(.system(size: 9, weight: .black, design: .monospaced))
-                            .tracking(0.6)
-                            .foregroundStyle(HudTheme.textSecondary)
-                    }
-                    if let mem = vm.snapshot?.memory {
-                        Text(String(format: "%.1f GB TRỐNG", mem.availableGB))
-                            .font(.system(size: 19, weight: .black, design: .monospaced))
-                            .foregroundStyle(HudTheme.cyan)
-                        SegmentedMemoryBar(memory: mem, height: 4.5)
-                    }
-                    Text("Thu hồi ~\(Formatters.bytes(vm.estimatedReclaimableRAMBytes)) từ app thừa")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .hudCard(accent: HudTheme.cyan, chamfer: 9, padding: 10, showBrackets: true)
-            }
-
-            HStack(spacing: 7) {
-                HudButton(title: "Chọn tất cả an toàn", color: HudTheme.cyan, filled: false, compact: true) {
-                    vm.selectAllSafe()
-                }
-                HudButton(title: "Bỏ chọn", color: HudTheme.textSecondary, filled: false, compact: true) {
-                    vm.deselectAll()
-                }
-
-                Spacer()
-
-                if vm.totalSelectedCleanupBytes > 0 {
-                    HudButton(
-                        title: vm.isCleaning ? "Đang dọn..." : "Dọn ngay (\(Formatters.bytes(vm.totalSelectedCleanupBytes)))",
-                        icon: "trash.slash.fill",
-                        color: HudTheme.emerald,
-                        filled: true,
-                        compact: false,
-                        disabled: vm.isCleaning
-                    ) {
-                        vm.runSelectedCleanup()
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Smart Collapsible Chrome & Automation Rescue Hub
-    private var chromeRescueCard: some View {
-        let chromeCacheSize = vm.browserCandidates.first(where: { $0.id == "cache-chrome" })?.sizeBytes ?? 0
-        let stuckCount = vm.stuckChromeRenderers.count
-        let totalStuckCPU = vm.stuckChromeRenderers.reduce(0.0) { $0 + $1.cpuPercent }
-        let totalChromeProcs = vm.processGroups.first(where: { $0.id == "app:Google Chrome" })?.processCount ?? 0
-        let chromeGPUCPU = vm.chromeGPUTotalCPU
-        let chromeGPUCount = vm.chromeGPUProcesses.count
-        let replayd = vm.replaydProcessGroup
-        let isReplaydStuck = vm.isReplaydStuck
-        let autoGroup = vm.orphanAutomationGroup
-        let cardAccent: Color = isReplaydStuck ? HudTheme.crimson : (hasActiveBrowserAlert ? HudTheme.amber : HudTheme.cyan)
-
-        return VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isRescueManuallyExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 9) {
-                    ZStack {
-                        ChamferedRect(cut: 6, cornerRadius: 3)
-                            .fill(cardAccent.opacity(0.20))
-                            .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(cardAccent.opacity(0.6), lineWidth: 0.8))
-                            .frame(width: 30, height: 30)
-                        Image(systemName: hasActiveBrowserAlert ? "exclamationmark.shield.fill" : "lifepreserver.fill")
-                            .foregroundStyle(cardAccent)
-                            .font(.system(size: 14, weight: .bold))
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text("CHROME & AUTOMATION RESCUE")
-                                .font(.system(size: 11, weight: .black, design: .monospaced))
-                                .foregroundStyle(HudTheme.textPrimary)
-                            if isReplaydStuck, let r = replayd {
-                                Text("REPLAYD \(Int(r.totalCPUPercent.rounded()))% CPU")
-                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                                    .padding(.horizontal, 5.5)
-                                    .padding(.vertical, 1.5)
-                                    .background(HudTheme.crimson.opacity(0.24), in: Capsule())
-                                    .foregroundStyle(HudTheme.crimson)
-                            } else if let auto = autoGroup {
-                                Text("\(auto.processCount) BOT NGẦM")
-                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                                    .padding(.horizontal, 5.5)
-                                    .padding(.vertical, 1.5)
-                                    .background(HudTheme.amber.opacity(0.22), in: Capsule())
-                                    .foregroundStyle(HudTheme.amber)
-                            } else if stuckCount > 0 {
-                                Text("\(stuckCount) TAB ĐƠ")
-                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                                    .padding(.horizontal, 5.5)
-                                    .padding(.vertical, 1.5)
-                                    .background(HudTheme.amber.opacity(0.22), in: Capsule())
-                                    .foregroundStyle(HudTheme.amber)
-                            } else if chromeGPUCPU >= 8.0 {
-                                Text("GPU \(Int(chromeGPUCPU.rounded()))% CPU")
-                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                                    .padding(.horizontal, 5.5)
-                                    .padding(.vertical, 1.5)
-                                    .background(HudTheme.amber.opacity(0.22), in: Capsule())
-                                    .foregroundStyle(HudTheme.amber)
-                            } else {
-                                Text("NOMINAL")
-                                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
-                                    .padding(.horizontal, 5.5)
-                                    .padding(.vertical, 1.5)
-                                    .background(HudTheme.emerald.opacity(0.18), in: Capsule())
-                                    .foregroundStyle(HudTheme.emerald)
-                            }
-                        }
-                        Text(isReplaydStuck
-                             ? "Bão XPC macOS replayd đang bóp nghẹt Chrome & OpenMausBot — bấm Reset replayd ngay (0 mất tab)."
-                             : (hasActiveBrowserAlert
-                                ? "Phát hiện tab JS/DOM, GPU Chrome hoặc cụm headless ngầm ngốn tải — bấm xử lý tức thì."
-                                : "Chữa bão replayd XPC, gỡ đơ tab JS/DOM & GPU Chrome, hoặc reset cụm agent-browser."))
-                            .font(.system(size: 10))
-                            .foregroundStyle(HudTheme.textSecondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-
-                    if chromeCacheSize > 0 {
-                        Text(Formatters.bytes(chromeCacheSize))
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(HudTheme.cyan)
-                    }
-
-                    Image(systemName: isRescueExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(cardAccent)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isRescueExpanded {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .foregroundStyle(HudTheme.emerald)
-                        .font(.caption)
-                    Text("Cô lập tuyệt đối: Không mất Extension, không mất tab/cookie, gỡ đơ Chrome thường không chạm bot ngầm.")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(HudTheme.textSecondary)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(HudTheme.emerald.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.emerald.opacity(0.32), lineWidth: 0.7))
-
-                // Action 0: macOS replayd XPC Storm Fix (Choking Chrome, OpenMausBot & WindowServer)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: isReplaydStuck ? "flame.fill" : "waveform.path.ecg")
-                            .foregroundStyle(isReplaydStuck ? HudTheme.crimson : HudTheme.cyan)
-                        Text("Chữa bão XPC macOS replayd (Bóp nghẹt Chrome & OpenMausBot)")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(HudTheme.textPrimary)
-                        Spacer()
-                        if let r = replayd {
-                            let pidText = r.pids.first.map { "PID \($0) • " } ?? ""
-                            let niceTag = vm.isReplaydThrottled ? " • NICE+20" : ""
-                            Text("\(pidText)\(String(format: "%.0f%%", r.totalCPUPercent)) CPU\(niceTag)")
-                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
-                                .foregroundStyle(isReplaydStuck ? HudTheme.crimson : HudTheme.emerald)
-                        } else {
-                            Text("0% CPU • ỔN ĐỊNH")
-                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(HudTheme.emerald)
-                        }
-                    }
-
-                    Text(isReplaydStuck
-                        ? (vm.isReplaydThrottled
-                            ? "MacPulse đã hạ ưu tiên replayd xuống nice +20 để giữ thao tác mượt, nhưng các app khách (Chrome / OpenMausBot headless / ChatGPT / Codex) vẫn kẹt vòng lặp XPC RPDaemonProxy. Khởi động lại sạch Chrome + Reset Automation (hoặc mở lại ChatGPT/Codex) để cắt hẳn bão XPC."
-                            : "/usr/libexec/replayd đang kẹt vòng lặp XPC (_Xmach_notify_port_destroyed), đốt 20–27% CPU trên Chrome chính + 15–19% mỗi Chrome headless. Bấm Reset để launchctl kickstart sạch (và tự hạ nice +20 nếu app khách vẫn spam) — không đóng 1 tab nào!")
-                        : "Khi tiến trình macOS /usr/libexec/replayd bị treo vòng lặp XPC, nó bóp nghẹt Chrome, OpenMausBot & WindowServer. Bấm reset để launchd khởi động lại sạch ở 0% CPU (giữ nguyên mọi tab).")
-                        .font(.caption2)
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HudButton(
-                        title: isReplaydStuck ? "Reset replayd ngay (0 mất tab)" : "Kiểm tra & Reset replayd",
-                        icon: "bolt.shield.fill",
-                        color: isReplaydStuck ? HudTheme.crimson : HudTheme.cyan,
-                        filled: isReplaydStuck,
-                        compact: true,
-                        disabled: vm.isRescuingChrome
-                    ) {
-                        vm.restartStuckReplayd(forceAlways: true)
-                    }
-                }
-                .padding(9)
-                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(isReplaydStuck ? HudTheme.crimson.opacity(0.65) : HudTheme.cyan.opacity(0.20), lineWidth: isReplaydStuck ? 1.1 : 0.8))
-
-                // Action 1: Stuck Renderers (JS/DOM loops) & Chrome GPU Soft Reset
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: (stuckCount > 0 || chromeGPUCPU >= 8.0) ? "exclamationmark.triangle.fill" : "bolt.horizontal.fill")
-                            .foregroundStyle((stuckCount > 0 || chromeGPUCPU >= 8.0) ? HudTheme.amber : HudTheme.cyan)
-                        Text("Gỡ đơ tab JS/DOM & GPU Chrome thường (Localhost / Theme)")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(HudTheme.textPrimary)
-                        Spacer()
-                        HStack(spacing: 5) {
-                            if stuckCount > 0 {
-                                Text("\(stuckCount) TAB • \(String(format: "%.0f%%", totalStuckCPU)) CPU")
-                                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
-                                    .foregroundStyle(HudTheme.amber)
-                            }
-                            if chromeGPUCPU >= 5.0 {
-                                Text("GPU \(String(format: "%.0f%%", chromeGPUCPU))")
-                                    .font(.system(size: 9.5, weight: .black, design: .monospaced))
-                                    .foregroundStyle(chromeGPUCPU >= 8.0 ? HudTheme.amber : HudTheme.cyan)
-                            }
-                        }
-                    }
-
-                    Text("Tự bắt tab kẹt vòng lặp JS/DOM (≥10% CPU hoặc ≥8% CPU & ≥250 MB RAM) và cho phép Reset GPU Chrome (tự hồi sinh trong <0.5s, 0 mất tab, giữ nguyên Extension và bot headless).")
-                        .font(.caption2)
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HStack(spacing: 7) {
-                        HudButton(
-                            title: stuckCount > 0 ? "Gỡ kẹt ngay (\(stuckCount) tab)" : "Gỡ tab đơ JS/DOM",
-                            icon: "bolt.fill",
-                            color: stuckCount > 0 ? HudTheme.amber : HudTheme.cyan,
-                            filled: true,
-                            compact: true
-                        ) {
-                            vm.killStuckChromeRenderers(forceAll: false)
-                        }
-
-                        if chromeGPUCount > 0 {
-                            HudButton(
-                                title: "Reset GPU Chrome",
-                                icon: "cpu",
-                                color: chromeGPUCPU >= 8.0 ? HudTheme.amber : HudTheme.cyan,
-                                filled: chromeGPUCPU >= 8.0,
-                                compact: true
-                            ) {
-                                vm.resetChromeGPUProcess()
-                            }
-                        }
-
-                        if totalChromeProcs > 0 {
-                            HudButton(title: "Gỡ mọi renderer", color: HudTheme.textSecondary, filled: false, compact: true) {
-                                vm.killStuckChromeRenderers(forceAll: true)
-                            }
-                        }
-                    }
-                }
-                .padding(9)
-                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder((stuckCount > 0 || chromeGPUCPU >= 8.0) ? HudTheme.amber.opacity(0.48) : HudTheme.cyan.opacity(0.20), lineWidth: 0.8))
-
-                // Action 2: Full Clean Restart
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise.circle.fill")
-                            .foregroundStyle(HudTheme.cobalt)
-                        Text("Khởi động lại sạch Chrome (Đóng êm 2.4s • Gỡ lock • Chữa replayd)")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(HudTheme.textPrimary)
-                    }
-
-                    Text("Đóng nhẹ nhàng để lưu trọn phiên tab, tự chữa replayd nếu đang treo, gỡ sạch SingletonLock & DevToolsActivePort, dọn OS cache tạm và mở lại Chrome mượt mà.")
-                        .font(.caption2)
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HStack(spacing: 8) {
-                        HudButton(
-                            title: vm.isRescuingChrome ? "Đang cứu Chrome..." : "Khởi động lại sạch Chrome",
-                            icon: "arrow.clockwise",
-                            color: HudTheme.cobalt,
-                            filled: true,
-                            compact: true,
-                            disabled: vm.isRescuingChrome || vm.isCleaning
-                        ) {
-                            vm.rescueAndCleanChrome(relaunch: true)
-                        }
-
-                        HudButton(
-                            title: "Chỉ tắt & dọn lock",
-                            color: HudTheme.textSecondary,
-                            filled: false,
-                            compact: true,
-                            disabled: vm.isRescuingChrome || vm.isCleaning
-                        ) {
-                            vm.rescueAndCleanChrome(relaunch: false)
-                        }
-                    }
-                }
-                .padding(9)
-                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cobalt.opacity(0.25), lineWidth: 0.8))
-
-                // Action 3: Automation & agent-browser Rescue
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: autoGroup != nil ? "exclamationmark.octagon.fill" : "terminal.fill")
-                            .foregroundStyle(autoGroup != nil ? HudTheme.amber : HudTheme.textSecondary)
-                        Text("Dừng & Reset Chrome Automation (agent-browser / MCP)")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(HudTheme.textPrimary)
-                        Spacer()
-                        if let auto = autoGroup {
-                            Text("\(auto.processCount) PROC • \(String(format: "%.0f%%", auto.totalCPUPercent)) CPU • \(Formatters.bytes(auto.totalRSSBytes))")
-                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
-                                .foregroundStyle(HudTheme.amber)
-                        }
-                    }
-
-                    Text(autoGroup != nil
-                        ? "Cụm headless Chrome & agent-browser đang chạy ngầm ngốn tài nguyên. Dừng sạch và gỡ khoá profile tự động mà không đụng Chrome thường."
-                        : "Dừng mọi tiến trình Chrome headless / agent-browser ngầm và xoá sạch SingletonLock / DevToolsActivePort.")
-                        .font(.caption2)
-                        .foregroundStyle(HudTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    HudButton(
-                        title: autoGroup != nil ? "Dừng & Reset sạch cụm Automation" : "Reset sạch Chrome Automation",
-                        icon: "arrow.counterclockwise.circle.fill",
-                        color: autoGroup != nil ? HudTheme.amber : HudTheme.cyan,
-                        filled: autoGroup != nil,
-                        compact: true,
-                        disabled: vm.isRescuingChrome || vm.isCleaning
-                    ) {
-                        vm.resetBrowserAutomation()
-                    }
-                }
-                .padding(9)
-                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(autoGroup != nil ? HudTheme.amber.opacity(0.55) : HudTheme.cyan.opacity(0.20), lineWidth: 0.8))
-            }
-        }
-        .hudCard(accent: cardAccent, chamfer: 10, padding: 11, showBrackets: true)
-    }
-
-    // MARK: - Category Sections
-    private var aiSection: some View {
-        cleanupSectionBlock(
-            icon: "sparkles",
-            title: "Rác AI (Antigravity, OpenMausBot, Cursor, Codex, Claude)",
-            subtitle: "Cache cập nhật ShipIt, logs, bộ đệm GPU/Shader tạm của công cụ AI — 0% mất API key, prompt hay cookie.",
-            color: HudTheme.violet,
-            totalBytes: vm.totalAIGarbageBytes,
-            items: vm.aiCandidates,
-            emptyMessage: "Không phát hiện tệp rác AI nào đáng kể."
-        )
-    }
-
-    private var browserSection: some View {
-        cleanupSectionBlock(
-            icon: "globe",
-            title: "Cache Trình duyệt (Chrome, Brave, Edge, Safari, Arc, Firefox)",
-            subtitle: "Chỉ xoá OS Cache tạm (~/Library/Caches). Bảo vệ tuyệt đối 100% Extension, tab, bookmark và tài khoản.",
-            color: HudTheme.cyan,
-            totalBytes: vm.totalBrowserCacheBytes,
-            items: vm.browserCandidates,
-            emptyMessage: "Không có cache trình duyệt lớn cần dọn."
-        )
-    }
-
-    private var developerSection: some View {
-        cleanupSectionBlock(
-            icon: "hammer.fill",
-            title: "Cache Lập trình & Build (Xcode, npm, Homebrew, pip, Composer)",
-            subtitle: "Gói tải về và tệp trung gian build — tự tải lại tự động khi bạn chạy build hoặc install.",
-            color: HudTheme.amber,
-            totalBytes: vm.totalDeveloperBuildBytes,
-            items: vm.developerCandidates,
-            emptyMessage: "Không có cache lập trình nào cần dọn."
-        )
-    }
-
-    private var logsSection: some View {
-        cleanupSectionBlock(
-            icon: "doc.text.fill",
-            title: "File Log phình to & Thùng rác",
-            subtitle: "Cắt rỗng an toàn log LocalWP lớn, dọn thumbnail QuickLook và Thùng rác (tắt mặc định).",
-            color: HudTheme.amber,
-            totalBytes: vm.totalLogsAndTrashBytes,
-            items: vm.logAndTrashCandidates,
-            emptyMessage: "Không có file log phình to hay rác hệ thống."
-        )
-    }
-
-    private var storageHeavySection: some View {
-        cleanupSectionBlock(
-            icon: "internaldrive.fill",
-            title: "Dữ liệu dung lượng lớn (Chỉ xem Finder)",
-            subtitle: "Database, trình duyệt Playwright/Puppeteer hoặc lịch sử phiên AI — MacPulse KHÔNG tự ý xoá.",
-            color: HudTheme.cobalt,
-            totalBytes: vm.totalHeavyStorageBytes,
-            items: vm.storageHeavyCandidates,
-            emptyMessage: "Không phát hiện dữ liệu dung lượng lớn (>500 MB) cần kiểm tra."
-        )
-    }
-
-    private func cleanupSectionBlock(
-        icon: String,
-        title: String,
-        subtitle: String,
-        color: Color,
-        totalBytes: UInt64,
-        items: [CleanupCandidate],
-        emptyMessage: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SectionEyebrow(
-                icon: icon,
-                title: title,
-                color: color,
-                trailingText: Formatters.bytes(totalBytes)
-            )
-            Text(subtitle)
-                .font(.system(size: 10))
-                .foregroundStyle(HudTheme.textSecondary)
-
-            if items.isEmpty {
-                Text(emptyMessage)
-                    .font(.caption)
-                    .foregroundStyle(HudTheme.textMuted)
-                    .padding(9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
-            } else {
-                LazyVStack(spacing: 5) {
-                    ForEach(items) { item in
-                        CleanupRowView(item: item, vm: vm, maxSizeBytes: vm.maxCandidateSizeBytes)
-                    }
-                }
-            }
-        }
-    }
-
-    private var ramSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            SectionEyebrow(
-                icon: "memorychip.fill",
-                title: "Giải phóng RAM thực (Ứng dụng đang chạy)",
-                color: HudTheme.cyan,
-                trailingText: "~\(Formatters.bytes(vm.estimatedReclaimableRAMBytes))"
-            )
-
-            Text("Đóng chọn lọc ứng dụng rảnh hoặc tab trùng để giải phóng RAM thật, không dùng lệnh ảo gây khựng hệ thống.")
-                .font(.system(size: 10))
-                .foregroundStyle(HudTheme.textSecondary)
-
-            HStack(spacing: 8) {
-                HudButton(title: "Soi & đóng từng tab", icon: "macwindow", color: HudTheme.cyan, filled: false, compact: true) {
-                    vm.scanBrowserTabs()
-                }
-
-                if let orphan = vm.orphanAutomationGroup {
-                    HudButton(title: "Dừng & Reset Bot (\(Formatters.bytes(orphan.totalRSSBytes)))", color: HudTheme.amber, filled: true, compact: true) {
-                        vm.resetBrowserAutomation()
-                    }
-                }
-            }
-
-            LazyVStack(spacing: 5) {
-                ForEach(vm.ramReclaimableGroups) { group in
-                    ProcessRowView(group: group, vm: vm, highlightRAM: true)
-                }
-            }
-        }
-    }
-
-    // MARK: - Footer
-    private var cleanerFooterBar: some View {
-        HStack {
-            HudButton(
-                title: vm.isScanningCleanup ? "Đang quét..." : "Quét lại SSD",
-                icon: "arrow.clockwise",
-                color: HudTheme.cyan,
-                filled: false,
-                compact: true,
-                disabled: vm.isScanningCleanup
-            ) {
-                vm.scanCleanup()
-            }
-
-            Spacer()
-
-            Text("ĐÃ CHỌN: \(Formatters.bytes(vm.totalSelectedCleanupBytes).uppercased())")
-                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(HudTheme.textSecondary)
-
-            HudButton(
-                title: vm.isCleaning ? "Đang dọn..." : "Dọn rác đã chọn",
-                icon: "sparkles",
-                color: HudTheme.emerald,
-                filled: true,
-                compact: true,
-                disabled: vm.isCleaning || vm.totalSelectedCleanupBytes == 0
-            ) {
-                vm.runSelectedCleanup()
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8.5)
-        .background(HudTheme.bgDeep.opacity(0.65))
     }
 }
 
-// MARK: - Cleanup Row with Glowing Relative Size Bar
+// MARK: - Clean Minimalist Cleanup Row
 private struct CleanupRowView: View {
     let item: CleanupCandidate
     @ObservedObject var vm: AppViewModel
@@ -1199,25 +900,15 @@ private struct CleanupRowView: View {
         return ("tray.full.fill", HudTheme.emerald)
     }
 
-    private var safetyBadge: (label: String, color: Color) {
-        if item.tier == .inspectOnly { return ("CHỈ XEM", HudTheme.cobalt) }
-        if item.defaultSelected { return ("AN TOÀN 100%", HudTheme.emerald) }
-        return ("TỰ CHỌN", HudTheme.amber)
-    }
-
-    private var sizeRatio: Double {
-        max(0.04, min(1.0, Double(item.sizeBytes) / Double(max(1, maxSizeBytes))))
-    }
-
     var body: some View {
         let isSelected = vm.selectedCleanupIDs.contains(item.id)
-        return HStack(spacing: 9) {
+        return HStack(spacing: 8) {
             if item.tier == .safeAutoClean {
                 Button {
                     vm.toggleCleanupSelection(item.id)
                 } label: {
                     Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                        .font(.system(size: 15.5))
+                        .font(.system(size: 15))
                         .foregroundStyle(isSelected ? HudTheme.cyan : HudTheme.textMuted)
                         .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
@@ -1225,55 +916,58 @@ private struct CleanupRowView: View {
                 .buttonStyle(.plain)
             } else {
                 Image(systemName: "folder.badge.questionmark")
+                    .font(.system(size: 13))
                     .foregroundStyle(HudTheme.cobalt)
                     .frame(width: 20, height: 20)
             }
 
             Image(systemName: itemIcon.name)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .foregroundStyle(itemIcon.color)
-                .frame(width: 18)
+                .frame(width: 16)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1.5) {
+                HStack(spacing: 5) {
                     Text(item.title)
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(HudTheme.textPrimary)
                         .lineLimit(1)
-                    Text(safetyBadge.label)
-                        .font(.system(size: 8, weight: .black, design: .monospaced))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(safetyBadge.color.opacity(0.16), in: Capsule())
-                        .foregroundStyle(safetyBadge.color)
+
+                    if item.tier == .inspectOnly {
+                        Text("CHỈ XEM")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 4.5)
+                            .padding(.vertical, 1)
+                            .background(HudTheme.cobalt.opacity(0.18), in: Capsule())
+                            .foregroundStyle(HudTheme.cobalt)
+                    } else if !item.defaultSelected {
+                        Text("TỰ CHỌN")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 4.5)
+                            .padding(.vertical, 1)
+                            .background(HudTheme.amber.opacity(0.18), in: Capsule())
+                            .foregroundStyle(HudTheme.amber)
+                    }
                 }
                 Text(item.subtitle)
                     .font(.system(size: 9.5))
-                    .foregroundStyle(HudTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(HudTheme.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             Spacer(minLength: 4)
 
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(Formatters.bytes(item.sizeBytes))
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(HudTheme.textPrimary)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(HudTheme.insetBg)
-                    Capsule()
-                        .fill(itemIcon.color)
-                        .frame(width: max(3, 46 * CGFloat(sizeRatio)))
-                }
-                .frame(width: 46, height: 3)
-            }
+            Text(Formatters.bytes(item.sizeBytes))
+                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(HudTheme.textPrimary)
 
             Button {
                 let firstPath = item.path.split(separator: "|").first.map(String.init) ?? item.path
                 vm.revealInFinder(firstPath)
             } label: {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 11))
+                Image(systemName: "folder")
+                    .font(.system(size: 10.5))
                     .foregroundStyle(HudTheme.textSecondary)
                     .frame(width: 22, height: 22)
                     .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 4))
@@ -1281,6 +975,6 @@ private struct CleanupRowView: View {
             .buttonStyle(.plain)
             .help("Mở thư mục trong Finder")
         }
-        .hudCard(accent: isSelected ? HudTheme.cyan.opacity(0.55) : HudTheme.textMuted.opacity(0.28), chamfer: 6, padding: 8.5)
+        .cleanCard(accent: isSelected ? HudTheme.cyan.opacity(0.55) : nil, cornerRadius: 7, padding: 7.5)
     }
 }

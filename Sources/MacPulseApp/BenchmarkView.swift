@@ -147,7 +147,8 @@ struct BenchmarkView: View {
                     }
                 }
             }
-            .padding(14)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
         .onAppear {
             vm.refreshLocalSites()
@@ -287,11 +288,11 @@ private struct BenchLabRow: View {
             TickProgressBar(
                 ratio: max(0.08, min(1.0, ratio)),
                 color: accentColor,
-                height: 6,
+                height: 5.5,
                 showTicks: true,
                 segments: 24
             )
         }
-        .hudCard(accent: accentColor, chamfer: 8, padding: 10, showBrackets: false)
+        .cleanCard(accent: ok ? nil : HudTheme.amber, cornerRadius: 8, padding: 10)
     }
 }

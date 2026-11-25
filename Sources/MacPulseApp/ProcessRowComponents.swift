@@ -32,56 +32,16 @@ struct ProcessRowView: View {
         return min(1.0, Double(group.totalRSSBytes) / (totalRAM * 0.35))
     }
 
+    private var rowAccent: Color? {
+        if group.actionKind == .restartReplayd { return HudTheme.crimson }
+        if group.isOrphanAutomation { return HudTheme.amber }
+        if showGuidanceCard { return HudTheme.cyan }
+        return nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Text(group.guidance.safetyLevel.badgeLabel.uppercased())
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 5.5)
-                    .padding(.vertical, 2)
-                    .background(safetyColor.opacity(0.16), in: Capsule())
-                    .overlay(Capsule().strokeBorder(safetyColor.opacity(0.45), lineWidth: 0.6))
-                    .foregroundStyle(safetyColor)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 4) {
-                        Text(group.displayName)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(HudTheme.textPrimary)
-                            .lineLimit(1)
-                        if group.processCount > 1 {
-                            Text("×\(group.processCount)")
-                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(HudTheme.cyan.opacity(0.8))
-                        }
-                    }
-                    if highlightRAM {
-                        Text(String(format: "CPU %.0f%%", group.totalCPUPercent))
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(HudTheme.textSecondary)
-                    }
-                }
-
-                Spacer(minLength: 4)
-
-                if !highlightRAM {
-                    VStack(alignment: .trailing, spacing: 2.5) {
-                        Text(String(format: "%.0f%%", group.totalCPUPercent))
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(cpuColor)
-                        microLoadBar(ratio: cpuIntensity, color: cpuColor)
-                    }
-                    .frame(width: 44, alignment: .trailing)
-                }
-
-                VStack(alignment: .trailing, spacing: 2.5) {
-                    Text(Formatters.bytes(group.totalRSSBytes))
-                        .font(.system(size: 10.5, weight: highlightRAM ? .bold : .semibold, design: .monospaced))
-                        .foregroundStyle(highlightRAM ? HudTheme.cyan : HudTheme.textSecondary)
-                    microLoadBar(ratio: ramIntensity, color: highlightRAM ? HudTheme.cyan : HudTheme.cobalt)
-                }
-                .frame(width: 68, alignment: .trailing)
-
                 Button {
                     if isPinnedInfo {
                         vm.inspectedGuidanceGroup = nil
@@ -89,29 +49,65 @@ struct ProcessRowView: View {
                         vm.inspectedGuidanceGroup = group
                     }
                 } label: {
-                    Image(systemName: showGuidanceCard ? "info.circle.fill" : "info.circle")
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(showGuidanceCard ? HudTheme.cyan : HudTheme.textMuted)
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(safetyColor)
+                            .frame(width: 6.5, height: 6.5)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 4) {
+                                Text(group.displayName)
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(HudTheme.textPrimary)
+                                    .lineLimit(1)
+                                if group.processCount > 1 {
+                                    Text("×\(group.processCount)")
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(HudTheme.textMuted)
+                                }
+                            }
+                            if highlightRAM {
+                                Text(String(format: "CPU %.0f%%", group.totalCPUPercent))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(HudTheme.textMuted)
+                            }
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("info_\(group.id)")
-                .help("\(group.guidance.whatIsIt)\n• Trạng thái: \(group.guidance.currentActivityHint)\n• Tắt có sao không: \(group.guidance.impactIfClosed)")
+                .help("\(group.guidance.safetyLevel.badgeLabel) • \(group.guidance.whatIsIt)\nBấm để xem chi tiết")
+
+                Spacer(minLength: 4)
+
+                if !highlightRAM {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(String(format: "%.0f%%", group.totalCPUPercent))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(cpuColor)
+                        microLoadBar(ratio: cpuIntensity, color: cpuColor)
+                    }
+                    .frame(width: 42, alignment: .trailing)
+                }
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(Formatters.bytes(group.totalRSSBytes))
+                        .font(.system(size: 10.5, weight: highlightRAM ? .bold : .medium, design: .monospaced))
+                        .foregroundStyle(highlightRAM ? HudTheme.cyan : HudTheme.textSecondary)
+                    microLoadBar(ratio: ramIntensity, color: highlightRAM ? HudTheme.cyan : HudTheme.cobalt)
+                }
+                .frame(width: 64, alignment: .trailing)
 
                 actionTrailingControl
+                    .frame(minWidth: 52, alignment: .trailing)
             }
 
             if showGuidanceCard {
                 GuidanceDetailCard(guidance: group.guidance)
             }
         }
-        .hudCard(
-            accent: group.actionKind == .restartReplayd ? HudTheme.crimson : (group.isOrphanAutomation ? HudTheme.amber : (showGuidanceCard ? HudTheme.cyan : HudTheme.cyan.opacity(0.32))),
-            chamfer: 6,
-            padding: 8,
-            showBrackets: group.actionKind == .restartReplayd || group.isOrphanAutomation || showGuidanceCard
-        )
+        .cleanCard(accent: rowAccent, cornerRadius: 7, padding: 8)
     }
 
     private func microLoadBar(ratio: Double, color: Color) -> some View {

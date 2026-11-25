@@ -12,9 +12,7 @@ public struct AIPulseView: View {
         let tickInterval: TimeInterval = vm.openCodeRunningSessions.isEmpty ? 30 : 5
         TimelineView(.periodic(from: .now, by: tickInterval)) { context in
             ScrollView {
-                VStack(spacing: 12) {
-                    headerBanner
-
+                VStack(spacing: 11) {
                     OpenCodeCommandCard(vm: vm, now: context.date)
 
                     if let snap = vm.aiSnapshot {
@@ -24,10 +22,9 @@ public struct AIPulseView: View {
                     } else {
                         loadingPlaceholder
                     }
-
-                    efficiencyFootnote
                 }
-                .padding(14)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
             }
         }
         .onAppear {
@@ -39,72 +36,15 @@ public struct AIPulseView: View {
         }
     }
 
-    private var headerBanner: some View {
-        HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                ChamferedRect(cut: 7, cornerRadius: 3)
-                    .fill(HudTheme.antigravityGradient)
-                    .frame(width: 36, height: 36)
-                Image(systemName: "bell.badge.waveform.fill")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("OPENCODE & AI COMMAND")
-                        .font(.system(size: 12.5, weight: .black, design: .monospaced))
-                        .tracking(0.8)
-                        .foregroundStyle(HudTheme.textPrimary)
-                    if vm.isScanningAI {
-                        ProgressView().controlSize(.mini)
-                    }
-                }
-                Text("Báo ngay khi task OpenCode chạy xong • Theo dõi hạn mức ChatGPT / Codex")
-                    .font(.system(size: 10))
-                    .foregroundStyle(HudTheme.textSecondary)
-            }
-
-            Spacer()
-
-            HudButton(
-                title: vm.isScanningAI ? "Đang quét" : "Đồng bộ",
-                icon: "arrow.clockwise",
-                color: HudTheme.cyan,
-                filled: true,
-                compact: true,
-                disabled: vm.isScanningAI
-            ) {
-                vm.pollOpenCode(forceRead: true)
-                vm.refreshAIQuota()
-            }
-        }
-        .hudCard(accent: HudTheme.cyan, chamfer: 9, padding: 11, showBrackets: true)
-    }
-
     private var loadingPlaceholder: some View {
-        VStack(spacing: 10) {
-            ProgressView().controlSize(.regular)
-            Text("SYNCING CHATGPT / CODEX TELEMETRY...")
-                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+        HStack(spacing: 9) {
+            ProgressView().controlSize(.small)
+            Text("Đang đồng bộ hạn mức ChatGPT / Codex...")
+                .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(HudTheme.cyan)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 32)
-        .hudCard(accent: HudTheme.cyan, chamfer: 10, padding: 14)
-    }
-
-    private var efficiencyFootnote: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "bolt.shield.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(HudTheme.emerald)
-            Text("Theo dõi OpenCode trực tiếp qua SQLite WAL chỉ đọc (0% CPU khi nhàn rỗi) và hạn mức thực từ ChatGPT / Codex.")
-                .font(.system(size: 10))
-                .foregroundStyle(HudTheme.textMuted)
-            Spacer()
-        }
-        .padding(.horizontal, 4)
+        .cleanCard(padding: 20)
     }
 }
 
@@ -176,6 +116,21 @@ private struct OpenCodeCommandCard: View {
                 }
 
                 Spacer(minLength: 4)
+
+                // Sync button
+                Button {
+                    vm.pollOpenCode(forceRead: true)
+                    vm.refreshAIQuota()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .frame(width: 24, height: 24)
+                        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isScanningAI)
+                .help("Đồng bộ lại OpenCode & ChatGPT Quota")
 
                 // Quick Master Switch
                 Button {

@@ -15,25 +15,19 @@ public enum AppTab: String, CaseIterable, Identifiable {
 }
 
 public enum CleanerFocusSection: String, CaseIterable, Identifiable, Sendable {
-    case all = "Tất cả"
-    case ai = "Rác AI"
-    case browser = "Trình duyệt"
-    case developer = "Lập trình"
-    case logs = "Log & Rác"
-    case storage = "Bộ nhớ lớn"
-    case ram = "RAM (Đang chạy)"
+    case ssd = "Dọn SSD"
+    case chrome = "Sửa Chrome"
+    case ram = "RAM"
+    case autopilot = "Tự động"
 
     public var id: String { rawValue }
 
     public var icon: String {
         switch self {
-        case .all: return "square.grid.2x2"
-        case .ai: return "sparkles"
-        case .browser: return "globe"
-        case .developer: return "hammer.fill"
-        case .logs: return "doc.text.fill"
-        case .storage: return "internaldrive"
-        case .ram: return "memorychip"
+        case .ssd: return "internaldrive.fill"
+        case .chrome: return "lifepreserver.fill"
+        case .ram: return "memorychip.fill"
+        case .autopilot: return "bolt.shield.fill"
         }
     }
 }
@@ -89,7 +83,7 @@ public final class AppViewModel: ObservableObject {
     }
     private var lastCleanupScanAt: Date = .distantPast
     @Published public var isPopoverVisible: Bool = false
-    @Published public var cleanerFocus: CleanerFocusSection = .all
+    @Published public var cleanerFocus: CleanerFocusSection = .ssd
 
     // MARK: - App Preferences & System Integration
     @Published public var menuBarDisplayMode: MenuBarDisplayMode {
@@ -1491,10 +1485,12 @@ public final class AppViewModel: ObservableObject {
         case .openCleanerTab:
             if targetID == "ram" {
                 cleanerFocus = .ram
-            } else if targetID == "ssd" {
-                cleanerFocus = .storage
+            } else if targetID == "chrome" {
+                cleanerFocus = .chrome
+            } else if targetID == "autopilot" {
+                cleanerFocus = .autopilot
             } else {
-                cleanerFocus = .all
+                cleanerFocus = .ssd
             }
             selectedTab = .cleaner
         }
