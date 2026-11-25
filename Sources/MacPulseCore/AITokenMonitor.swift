@@ -335,20 +335,12 @@ public final class AITokenMonitor: @unchecked Sendable {
         let today = todayDateString ?? Self.currentDateString()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
 
-        // Scan providers concurrently to halve wall-clock latency
+        // Scan providers concurrently to halve wall-clock latency (Antigravity excluded per user preference)
         let group = DispatchGroup()
         let resultLock = NSLock()
-        var p1: AIProviderMetrics?
         var p2: AIProviderMetrics?
         var p3: AIProviderMetrics?
         var p4: AIProviderMetrics?
-
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let m = self.scanAntigravity(home: home, today: today)
-            resultLock.lock(); p1 = m; resultLock.unlock()
-            group.leave()
-        }
 
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
@@ -373,7 +365,7 @@ public final class AITokenMonitor: @unchecked Sendable {
 
         group.wait()
 
-        let providers = [p1, p2, p3, p4].compactMap { $0 }
+        let providers = [p2, p3, p4].compactMap { $0 }
         let grandTotal = providers.reduce(0) { $0 + $1.totalTokensToday }
         let activeCount = providers.filter { $0.isDetected }.count
 

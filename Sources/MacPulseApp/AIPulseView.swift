@@ -9,16 +9,15 @@ public struct AIPulseView: View {
     }
 
     public var body: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
+        let tickInterval: TimeInterval = vm.openCodeRunningSessions.isEmpty ? 30 : 5
+        TimelineView(.periodic(from: .now, by: tickInterval)) { context in
             ScrollView {
                 VStack(spacing: 12) {
                     headerBanner
 
-                    if let snap = vm.aiSnapshot {
-                        if let agy = snap.antigravity {
-                            AntigravityCommandCard(metrics: agy, now: context.date)
-                        }
+                    OpenCodeCommandCard(vm: vm, now: context.date)
 
+                    if let snap = vm.aiSnapshot {
                         if let gpt = snap.chatGPT {
                             ChatGPTCommandCard(metrics: gpt, now: context.date)
                         }
@@ -32,6 +31,8 @@ public struct AIPulseView: View {
             }
         }
         .onAppear {
+            vm.openCodeUnreadCompletions = 0
+            vm.pollOpenCode(forceRead: true)
             if vm.aiSnapshot == nil {
                 vm.refreshAIQuota()
             }
@@ -44,14 +45,14 @@ public struct AIPulseView: View {
                 ChamferedRect(cut: 7, cornerRadius: 3)
                     .fill(HudTheme.antigravityGradient)
                     .frame(width: 36, height: 36)
-                Image(systemName: "waveform.path.ecg.rectangle.fill")
+                Image(systemName: "bell.badge.waveform.fill")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text("NEURAL QUOTA COMMAND")
+                    Text("OPENCODE & AI COMMAND")
                         .font(.system(size: 12.5, weight: .black, design: .monospaced))
                         .tracking(0.8)
                         .foregroundStyle(HudTheme.textPrimary)
@@ -59,7 +60,7 @@ public struct AIPulseView: View {
                         ProgressView().controlSize(.mini)
                     }
                 }
-                Text("Đo trực tiếp phiên 5 giờ, giới hạn tuần & token thực (Antigravity + ChatGPT)")
+                Text("Báo ngay khi task OpenCode chạy xong • Theo dõi hạn mức ChatGPT / Codex")
                     .font(.system(size: 10))
                     .foregroundStyle(HudTheme.textSecondary)
             }
@@ -74,6 +75,7 @@ public struct AIPulseView: View {
                 compact: true,
                 disabled: vm.isScanningAI
             ) {
+                vm.pollOpenCode(forceRead: true)
                 vm.refreshAIQuota()
             }
         }
@@ -83,12 +85,12 @@ public struct AIPulseView: View {
     private var loadingPlaceholder: some View {
         VStack(spacing: 10) {
             ProgressView().controlSize(.regular)
-            Text("CONNECTING TO NEURAL DAEMONS...")
+            Text("SYNCING CHATGPT / CODEX TELEMETRY...")
                 .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                 .foregroundStyle(HudTheme.cyan)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 44)
+        .padding(.vertical, 32)
         .hudCard(accent: HudTheme.cyan, chamfer: 10, padding: 14)
     }
 
@@ -97,7 +99,7 @@ public struct AIPulseView: View {
             Image(systemName: "bolt.shield.fill")
                 .font(.system(size: 11))
                 .foregroundStyle(HudTheme.emerald)
-            Text("Quét song song từ Antigravity daemon nội bộ, ChatGPT /wham/usage & SQLite cục bộ. 0% số liệu giả khi offline.")
+            Text("Theo dõi OpenCode trực tiếp qua SQLite WAL chỉ đọc (0% CPU khi nhàn rỗi) và hạn mức thực từ ChatGPT / Codex.")
                 .font(.system(size: 10))
                 .foregroundStyle(HudTheme.textMuted)
             Spacer()
@@ -106,114 +108,363 @@ public struct AIPulseView: View {
     }
 }
 
-// MARK: - Google Antigravity Hologram Card
-private struct AntigravityCommandCard: View {
-    let metrics: AIProviderMetrics
+// MARK: - OpenCode Live Task Monitor & Completion Notifier Card
+private struct OpenCodeCommandCard: View {
+    @ObservedObject var vm: AppViewModel
     let now: Date
+    @State private var isSettingsExpanded: Bool = false
+
+    private static let timeFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
+        return df
+    }()
+
+    private var isRunningAny: Bool { !vm.openCodeRunningSessions.isEmpty }
+
+    private var cardAccent: Color {
+        if !vm.isOpenCodeAvailable { return HudTheme.textMuted }
+        if isRunningAny { return HudTheme.cyan }
+        return vm.openCodeConfig.isEnabled ? HudTheme.emerald : HudTheme.textMuted
+    }
+
+    private var statusBadgeText: String {
+        if !vm.isOpenCodeAvailable { return "NOT FOUND" }
+        if isRunningAny { return "\(vm.openCodeRunningSessions.count) RUNNING" }
+        return vm.openCodeConfig.isEnabled ? "WATCHING" : "MUTED"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        let enabled = vm.openCodeConfig.isEnabled
+        VStack(alignment: .leading, spacing: 10) {
+            // Card Header
             HStack(spacing: 10) {
                 ZStack {
                     ChamferedRect(cut: 6, cornerRadius: 3)
-                        .fill(HudTheme.antigravityGradient)
+                        .fill(cardAccent.opacity(0.22))
+                        .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(cardAccent.opacity(0.65), lineWidth: 0.9))
                         .frame(width: 34, height: 34)
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
+                    Image(systemName: isRunningAny ? "terminal.fill" : "bell.badge.fill")
+                        .font(.system(size: 14.5, weight: .bold))
+                        .foregroundStyle(cardAccent)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(metrics.name.uppercased())
-                            .font(.system(size: 12.5, weight: .black, design: .monospaced))
+                        Text("OPENCODE TASK WATCHER")
+                            .font(.system(size: 12, weight: .black, design: .monospaced))
                             .foregroundStyle(HudTheme.textPrimary)
-                        if let plan = metrics.planTier {
-                            Text(plan)
-                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(HudTheme.cobalt.opacity(0.24), in: Capsule())
-                                .overlay(Capsule().strokeBorder(HudTheme.cobalt.opacity(0.6), lineWidth: 0.7))
-                                .foregroundStyle(HudTheme.cyan)
+
+                        HStack(spacing: 4) {
+                            LivePulseDot(color: cardAccent, isLive: isRunningAny || (enabled && vm.isOpenCodeAvailable))
+                            Text(statusBadgeText)
+                                .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                                .foregroundStyle(cardAccent)
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(cardAccent.opacity(0.16), in: Capsule())
+                        .overlay(Capsule().strokeBorder(cardAccent.opacity(0.45), lineWidth: 0.7))
                     }
-                    Text(metrics.userAccount ?? metrics.statusMessage)
-                        .font(.system(size: 10, design: .monospaced))
+
+                    Text(isRunningAny
+                         ? "Đang có \(vm.openCodeRunningSessions.count) phiên OpenCode chạy — sẽ báo ngay khi xong!"
+                         : "Tự phát âm thanh & hiện banner nổi ngay khi task OpenCode hoàn tất hoặc báo lỗi.")
+                        .font(.system(size: 10))
                         .foregroundStyle(HudTheme.textSecondary)
                         .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 4)
 
-                SourceStateBadge(state: metrics.sourceState, syncTime: metrics.lastSyncTime)
+                // Quick Master Switch
+                Button {
+                    vm.openCodeConfig.isEnabled.toggle()
+                } label: {
+                    ZStack(alignment: enabled ? .trailing : .leading) {
+                        Capsule()
+                            .fill(enabled ? HudTheme.emerald.opacity(0.28) : HudTheme.insetBg)
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(enabled ? HudTheme.emerald.opacity(0.85) : HudTheme.textMuted.opacity(0.45), lineWidth: 1)
+                            )
+                            .frame(width: 36, height: 19)
+                        Circle()
+                            .fill(enabled ? HudTheme.emerald : HudTheme.textMuted)
+                            .frame(width: 13, height: 13)
+                            .padding(.horizontal, 3)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(enabled ? "Tắt thông báo hoàn tất OpenCode" : "Bật thông báo hoàn tất OpenCode")
             }
 
             Rectangle()
-                .fill(LinearGradient(colors: [HudTheme.cobalt.opacity(0.5), .clear], startPoint: .leading, endPoint: .trailing))
+                .fill(LinearGradient(colors: [cardAccent.opacity(0.5), .clear], startPoint: .leading, endPoint: .trailing))
                 .frame(height: 0.8)
 
-            if !metrics.quotaPools.isEmpty {
-                VStack(spacing: 8) {
-                    ForEach(metrics.quotaPools) { pool in
-                        QuotaPoolTelemetryRow(
-                            title: pool.label,
-                            subtitle: pool.modelSummary,
-                            quota: pool.quota,
-                            accent: pool.id.contains("gemini") ? HudTheme.cyan : HudTheme.violet,
-                            now: now
-                        )
+            // Active Running Sessions Banner
+            if isRunningAny {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("ĐANG CHẠY TRỰC TIẾP")
+                        .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                        .tracking(0.6)
+                        .foregroundStyle(HudTheme.cyan)
+
+                    let nowMs = Int64(now.timeIntervalSince1970 * 1000)
+                    ForEach(vm.openCodeRunningSessions) { session in
+                        runningSessionRow(session, nowMs: nowMs)
                     }
                 }
-            } else if let q5 = metrics.fiveHourQuota {
-                QuotaPoolTelemetryRow(
-                    title: q5.name,
-                    subtitle: metrics.activeModel ?? "Gemini",
-                    quota: q5,
-                    accent: HudTheme.cyan,
-                    now: now
-                )
+            }
+
+            // Action Controls Bar
+            HStack(spacing: 7) {
+                HudButton(title: "Thử thông báo", icon: "bell.and.waves.left.and.right.fill", color: HudTheme.emerald, filled: true, compact: true) {
+                    vm.testOpenCodeAlert()
+                }
+
+                HudButton(title: "Mở OpenCode", icon: "terminal", color: HudTheme.cyan, filled: false, compact: true) {
+                    vm.focusOpenCodeHost()
+                }
+
+                HudButton(
+                    title: isSettingsExpanded ? "Ẩn cài đặt" : "Cài đặt",
+                    icon: isSettingsExpanded ? "chevron.up" : "slider.horizontal.3",
+                    color: HudTheme.textSecondary,
+                    filled: false,
+                    compact: true
+                ) {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isSettingsExpanded.toggle()
+                    }
+                }
+
+                Spacer()
+
+                Text(vm.openCodeConfig.playSound ? "♪ \(vm.openCodeConfig.soundName.uppercased())" : "MUTE")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.textMuted)
+            }
+
+            // Collapsible Settings Panel
+            if isSettingsExpanded {
+                openCodeSettingsPanel
+            }
+
+            // Recent Sessions List
+            if !vm.isOpenCodeAvailable {
+                OfflineQuotaNotice(message: "Không tìm thấy cơ sở dữ liệu OpenCode (~/.local/share/opencode/opencode.db).")
             } else {
-                OfflineQuotaNotice(message: metrics.statusMessage)
-            }
+                let completedRecent = vm.openCodeRecentSessions.filter { !$0.isRunning(nowMs: Int64(now.timeIntervalSince1970 * 1000)) }.prefix(5)
+                if !completedRecent.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("PHIÊN OPENCODE GẦN ĐÂY")
+                                .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                                .tracking(0.6)
+                                .foregroundStyle(HudTheme.textMuted)
+                            Spacer()
+                            if !vm.openCodeRecentAlerts.isEmpty {
+                                Text("\(vm.openCodeRecentAlerts.count) ĐÃ BÁO")
+                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(HudTheme.emerald)
+                            }
+                        }
 
-            if metrics.promptCreditsAvailable != nil || metrics.flowCreditsAvailable != nil {
-                HStack(spacing: 8) {
-                    if let pCred = metrics.promptCreditsAvailable {
-                        creditPill(label: "PROMPT CREDITS", value: "\(pCred)", color: HudTheme.cyan)
+                        ForEach(Array(completedRecent)) { item in
+                            completedSessionRow(item)
+                        }
                     }
-                    if let fCred = metrics.flowCreditsAvailable {
-                        creditPill(label: "FLOW CREDITS", value: "\(fCred)", color: HudTheme.violet)
-                    }
-                    Spacer()
                 }
             }
-
-            TokenStatsMatrix(
-                tokens5H: metrics.formattedTokensLast5Hours,
-                tokensToday: metrics.formattedTokensToday,
-                tokens7D: metrics.formattedTokensLast7Days,
-                turnsToday: metrics.turnsOrPromptsToday,
-                sessionsToday: metrics.activeSessionsToday,
-                accent: HudTheme.cyan
-            )
         }
-        .hudCard(accent: HudTheme.cobalt, chamfer: 11, padding: 13, showBrackets: true)
+        .hudCard(accent: cardAccent, chamfer: 11, padding: 13, showBrackets: true)
     }
 
-    private func creditPill(label: String, value: String, color: Color) -> some View {
-        HStack(spacing: 5) {
-            Text(label)
-                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(HudTheme.textSecondary)
-            Text(value)
+    private func runningSessionRow(_ session: OpenCodeSessionItem, nowMs: Int64) -> some View {
+        let elapsed = OpenCodeMonitor.formatDuration(seconds: session.durationSeconds(nowMs: nowMs))
+        return HStack(spacing: 8) {
+            LivePulseDot(color: HudTheme.cyan, isLive: true)
+
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text(session.displayTitle)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(HudTheme.textPrimary)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(session.projectName)
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(HudTheme.cyan)
+                    if let model = session.model, !model.isEmpty {
+                        Text("•")
+                            .foregroundStyle(HudTheme.textMuted)
+                        Text(model)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(HudTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Text(elapsed)
                 .font(.system(size: 10.5, weight: .black, design: .monospaced))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(HudTheme.cyan.opacity(0.20), in: Capsule())
+                .overlay(Capsule().strokeBorder(HudTheme.cyan.opacity(0.55), lineWidth: 0.7))
+                .foregroundStyle(HudTheme.cyan)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(HudTheme.cyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.45), lineWidth: 0.8))
+    }
+
+    private func completedSessionRow(_ session: OpenCodeSessionItem) -> some View {
+        let color: Color
+        let icon: String
+        switch session.outcome {
+        case .succeeded, .unknown:
+            color = HudTheme.emerald
+            icon = "checkmark.circle.fill"
+        case .failed:
+            color = HudTheme.crimson
+            icon = "xmark.circle.fill"
+        case .interrupted:
+            color = HudTheme.amber
+            icon = "stop.circle.fill"
+        }
+
+        let dur = session.durationSeconds()
+        let durText = dur >= 1 ? OpenCodeMonitor.formatDuration(seconds: dur) : "<1s"
+
+        return HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11.5, weight: .bold))
                 .foregroundStyle(color)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.displayTitle)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(HudTheme.textPrimary)
+                    .lineLimit(1)
+                Text(session.projectName)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            Text(durText)
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 5.5)
+                .padding(.vertical, 1.5)
+                .background(color.opacity(0.14), in: Capsule())
+                .foregroundStyle(color)
+
+            Text(Self.timeFormatter.string(from: session.lastActivityDate))
+                .font(.system(size: 9.5, design: .monospaced))
+                .foregroundStyle(HudTheme.textMuted)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 3.5)
-        .background(HudTheme.insetBg, in: Capsule())
-        .overlay(Capsule().strokeBorder(color.opacity(0.45), lineWidth: 0.7))
+        .padding(.vertical, 5.5)
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.textMuted.opacity(0.18), lineWidth: 0.6))
+    }
+
+    private var openCodeSettingsPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Sound Picker
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("Âm báo khi hoàn tất")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(HudTheme.textSecondary)
+                    Spacer()
+                    Text("Bấm tên để nghe thử")
+                        .font(.system(size: 9))
+                        .foregroundStyle(HudTheme.textMuted)
+                }
+                HStack(spacing: 4) {
+                    ForEach(["Glass", "Hero", "Ping", "Submarine", "Pop"], id: \.self) { name in
+                        let active = vm.openCodeConfig.playSound && vm.openCodeConfig.soundName == name
+                        Button {
+                            vm.openCodeConfig.playSound = true
+                            vm.previewOpenCodeSound(name)
+                        } label: {
+                            Text(name)
+                                .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3.5)
+                                .background(active ? HudTheme.emerald.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
+                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? HudTheme.emerald.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
+                                .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(8)
+            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+
+            // Min Duration Selector
+            HStack {
+                Text("Chỉ báo task chạy tối thiểu")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(HudTheme.textSecondary)
+                Spacer()
+                HStack(spacing: 4) {
+                    ForEach([(0, "Mọi task"), (3, ">3s"), (10, ">10s"), (30, ">30s")], id: \.0) { secs, label in
+                        let active = vm.openCodeConfig.minDurationSeconds == secs
+                        Button {
+                            vm.openCodeConfig.minDurationSeconds = secs
+                        } label: {
+                            Text(label)
+                                .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
+                                .padding(.horizontal, 6.5)
+                                .padding(.vertical, 3)
+                                .background(active ? HudTheme.cyan.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
+                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? HudTheme.cyan.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
+                                .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(8)
+            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+
+            // Toggles
+            VStack(spacing: 7) {
+                HudToggleRow(
+                    title: "Phát âm thanh báo ngay khi xong",
+                    isOn: $vm.openCodeConfig.playSound,
+                    accent: HudTheme.emerald
+                )
+                HudToggleRow(
+                    title: "Hiện banner HUD nổi góc phải màn hình",
+                    subtitle: "Không cướp con trỏ gõ phím — bấm vào để nhảy ngay tới cửa sổ OpenCode.",
+                    isOn: $vm.openCodeConfig.showFloatingBanner,
+                    accent: HudTheme.emerald
+                )
+                HudToggleRow(
+                    title: "Gửi thông báo vào macOS Notification Center",
+                    isOn: $vm.openCodeConfig.showSystemNotification,
+                    accent: HudTheme.cyan
+                )
+                HudToggleRow(
+                    title: "Chỉ báo phiên chính (bỏ qua subagent con)",
+                    isOn: $vm.openCodeConfig.onlyTopLevelSessions,
+                    accent: HudTheme.cyan
+                )
+            }
+            .padding(9)
+            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+        }
     }
 }
 

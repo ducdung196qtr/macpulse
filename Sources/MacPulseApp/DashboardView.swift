@@ -25,10 +25,15 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - AI Telemetry Uplink Strip
+    // MARK: - OpenCode & AI Telemetry Uplink Strip
     @ViewBuilder
     private var aiQuotaUplinkStrip: some View {
-        if let ai = vm.aiSnapshot, (ai.antigravity?.isDetected == true || ai.chatGPT?.isDetected == true) {
+        let hasGPT = vm.aiSnapshot?.chatGPT?.isDetected == true
+        let hasOC = vm.isOpenCodeAvailable
+        if hasOC || hasGPT {
+            let ocRunningCount = vm.openCodeRunningSessions.count
+            let ocUnread = vm.openCodeUnreadCompletions
+            let stripColor: Color = ocRunningCount > 0 ? HudTheme.cyan : (ocUnread > 0 ? HudTheme.emerald : HudTheme.cyan)
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     vm.selectedTab = .aiPulse
@@ -37,24 +42,36 @@ struct DashboardView: View {
                 HStack(spacing: 10) {
                     HStack(spacing: 5) {
                         LivePulseDot(
-                            color: (ai.antigravity?.sourceState == .live || ai.chatGPT?.sourceState == .live) ? HudTheme.emerald : HudTheme.amber,
-                            isLive: ai.antigravity?.sourceState == .live || ai.chatGPT?.sourceState == .live
+                            color: ocRunningCount > 0 ? HudTheme.cyan : (vm.aiSnapshot?.chatGPT?.sourceState == .live || vm.openCodeConfig.isEnabled ? HudTheme.emerald : HudTheme.amber),
+                            isLive: ocRunningCount > 0 || vm.aiSnapshot?.chatGPT?.sourceState == .live
                         )
-                        Text("AI UPLINK")
+                        Text("OPENCODE")
                             .font(.system(size: 9.5, weight: .black, design: .monospaced))
                             .tracking(0.8)
-                            .foregroundStyle(HudTheme.cyan)
+                            .foregroundStyle(stripColor)
                     }
 
-                    Rectangle()
-                        .fill(HudTheme.cyan.opacity(0.28))
-                        .frame(width: 1, height: 14)
-
-                    if let agy = ai.antigravity, agy.isDetected, let q5 = agy.fiveHourQuota {
-                        miniQuotaChip(label: "AGY 5H", remainingPct: q5.remainingPercent, color: HudTheme.cobalt)
+                    if hasOC {
+                        let ocLabel: String = ocRunningCount > 0
+                            ? "\(ocRunningCount) ĐANG CHẠY"
+                            : (ocUnread > 0 ? "\(ocUnread) VỪA XONG" : (vm.openCodeConfig.isEnabled ? "ĐANG THEO DÕI" : "TẮT BÁO"))
+                        let ocBadgeColor: Color = ocRunningCount > 0
+                            ? HudTheme.cyan
+                            : (ocUnread > 0 || vm.openCodeConfig.isEnabled ? HudTheme.emerald : HudTheme.textMuted)
+                        Text(ocLabel)
+                            .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ocBadgeColor.opacity(0.18), in: Capsule())
+                            .overlay(Capsule().strokeBorder(ocBadgeColor.opacity(0.5), lineWidth: 0.65))
+                            .foregroundStyle(ocBadgeColor)
                     }
 
-                    if let gpt = ai.chatGPT, gpt.isDetected {
+                    if let gpt = vm.aiSnapshot?.chatGPT, gpt.isDetected {
+                        Rectangle()
+                            .fill(HudTheme.cyan.opacity(0.28))
+                            .frame(width: 1, height: 14)
+
                         if let q5 = gpt.fiveHourQuota {
                             miniQuotaChip(label: "GPT 5H", remainingPct: q5.remainingPercent, color: HudTheme.emerald)
                         }
@@ -67,13 +84,13 @@ struct DashboardView: View {
 
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9.5, weight: .bold))
-                        .foregroundStyle(HudTheme.cyan)
+                        .foregroundStyle(stripColor)
                 }
-                .hudCard(accent: HudTheme.cyan, chamfer: 7, padding: 8, showBrackets: false)
+                .hudCard(accent: stripColor, chamfer: 7, padding: 8, showBrackets: false)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Bấm để mở AI Quota Command Center")
+            .help("Bấm để mở OpenCode Task Watcher & ChatGPT Quota")
         }
     }
 

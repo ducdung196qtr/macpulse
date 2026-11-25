@@ -7,7 +7,7 @@ import ServiceManagement
 
 public enum AppTab: String, CaseIterable, Identifiable {
     case overview = "Tổng quan"
-    case aiPulse = "AI Quota"
+    case aiPulse = "AI & OC"
     case cleaner = "Dọn dẹp"
     case vietnamese = "Bộ gõ"
     case benchmark = "Đo tốc độ"
@@ -78,8 +78,12 @@ public final class AppViewModel: ObservableObject {
         didSet {
             if selectedTab == .cleaner && Date().timeIntervalSince(lastCleanupScanAt) > 60 {
                 scanCleanup()
-            } else if selectedTab == .aiPulse && (aiSnapshot == nil || Date().timeIntervalSince(aiSnapshot?.timestamp ?? .distantPast) > 45) {
-                refreshAIQuota()
+            } else if selectedTab == .aiPulse {
+                openCodeUnreadCompletions = 0
+                pollOpenCode(forceRead: true)
+                if aiSnapshot == nil || Date().timeIntervalSince(aiSnapshot?.timestamp ?? .distantPast) > 45 {
+                    refreshAIQuota()
+                }
             }
         }
     }
@@ -96,10 +100,31 @@ public final class AppViewModel: ObservableObject {
     }
     @Published public var launchAtLoginEnabled: Bool = false
 
-    // MARK: - AI Pulse Token Monitor State
+    // MARK: - AI Pulse & OpenCode Task Monitor State
     @Published public var aiSnapshot: AITokenSnapshot?
     @Published public var isScanningAI: Bool = false
     private let aiTokenMonitor = AITokenMonitor()
+
+    @Published public var openCodeConfig: OpenCodeNotifyConfig {
+        didSet {
+            guard !isApplyingProgrammaticOpenCodeUpdate else { return }
+            persistOpenCodeState()
+            if openCodeConfig.isEnabled && openCodeConfig.showSystemNotification {
+                OpenCodeAlertManager.shared.requestNotificationPermissionIfNeeded()
+            }
+            pollOpenCode(forceRead: true)
+        }
+    }
+    @Published public var isOpenCodeAvailable: Bool = false
+    @Published public var openCodeRunningSessions: [OpenCodeSessionItem] = []
+    @Published public var openCodeRecentSessions: [OpenCodeSessionItem] = []
+    @Published public var openCodeRecentAlerts: [OpenCodeCompletionEvent] = []
+    @Published public var openCodeUnreadCompletions: Int = 0
+    private let openCodeMonitor = OpenCodeMonitor()
+    private let openCodeStore = OpenCodeMonitorStore()
+    private var openCodePollTimer: Timer?
+    private var isPollingOpenCode: Bool = false
+    private var isApplyingProgrammaticOpenCodeUpdate = false
 
     // MARK: - System Telemetry & Sparkline History
     @Published public var snapshot: SystemSnapshot?
@@ -221,6 +246,13 @@ public final class AppViewModel: ObservableObject {
         self.autoOptimizeLifetimeFreedBytes = loadedAutoOpt.totalLifetimeFreedBytes
         self.autoOptimizeHistory = loadedAutoOpt.history
 
+        let loadedOpenCode = openCodeStore.load()
+        if !FileManager.default.fileExists(atPath: openCodeStore.fileURL.path) {
+            try? openCodeStore.save(loadedOpenCode)
+        }
+        self.openCodeConfig = loadedOpenCode.config
+        self.openCodeRecentAlerts = loadedOpenCode.recentAlerts
+
         let loaded = imeStore.load()
         if !FileManager.default.fileExists(atPath: imeStore.fileURL.path) {
             try? imeStore.save(loaded)
@@ -243,8 +275,15 @@ public final class AppViewModel: ObservableObject {
         refreshNow(includeProcesses: true)
         startAdaptiveScheduler()
         startAutoOptimizeScheduler()
+        startOpenCodeWatcher()
 
         // Defer non-critical background scans slightly so app launch is instant (<100ms)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.pollOpenCode(forceRead: true)
+            if self?.openCodeConfig.isEnabled == true && self?.openCodeConfig.showSystemNotification == true {
+                OpenCodeAlertManager.shared.requestNotificationPermissionIfNeeded()
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             self?.refreshAIQuota()
         }
@@ -260,6 +299,7 @@ public final class AppViewModel: ObservableObject {
     deinit {
         schedulerTimer?.invalidate()
         autoOptimizeTimer?.invalidate()
+        openCodePollTimer?.invalidate()
         noticeDismissTask?.cancel()
         for obs in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
@@ -493,6 +533,85 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
+    // MARK: - OpenCode Task Completion Monitor & Notifier
+    private func persistOpenCodeState() {
+        let state = PersistedOpenCodeNotifyState(
+            config: openCodeConfig,
+            recentAlerts: Array(openCodeRecentAlerts.prefix(15))
+        )
+        try? openCodeStore.save(state)
+    }
+
+    private func startOpenCodeWatcher() {
+        openCodePollTimer?.invalidate()
+        openCodePollTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.pollOpenCode(forceRead: false)
+            }
+        }
+    }
+
+    public func pollOpenCode(forceRead: Bool = false) {
+        guard !isPollingOpenCode else { return }
+        isPollingOpenCode = true
+        let cfg = openCodeConfig
+        Task.detached(priority: .utility) { [openCodeMonitor] in
+            let res = openCodeMonitor.poll(config: cfg, forceRead: forceRead)
+            await MainActor.run {
+                self.isPollingOpenCode = false
+                if !res.didReadDatabase && self.isOpenCodeAvailable == res.isDatabaseAvailable {
+                    return
+                }
+                self.isOpenCodeAvailable = res.isDatabaseAvailable
+                self.openCodeRunningSessions = res.runningSessions
+                self.openCodeRecentSessions = res.recentSessions
+
+                if !res.newlyCompleted.isEmpty {
+                    for ev in res.newlyCompleted {
+                        self.openCodeRecentAlerts.insert(ev, at: 0)
+                        OpenCodeAlertManager.shared.deliverAlert(for: ev, config: self.openCodeConfig)
+                    }
+                    if self.openCodeRecentAlerts.count > 15 {
+                        self.openCodeRecentAlerts = Array(self.openCodeRecentAlerts.prefix(15))
+                    }
+                    if !(self.isPopoverVisible && self.selectedTab == .aiPulse) {
+                        self.openCodeUnreadCompletions += res.newlyCompleted.count
+                    }
+                    self.persistOpenCodeState()
+                }
+            }
+        }
+    }
+
+    public func testOpenCodeAlert() {
+        let sample = OpenCodeCompletionEvent(
+            sessionID: "test-\(UUID().uuidString.prefix(8))",
+            title: "Thử thông báo hoàn tất task OpenCode (nhấn Mở OpenCode để nhảy tới terminal)",
+            projectName: "MacPulse Test",
+            directory: NSHomeDirectory(),
+            outcome: .succeeded,
+            durationSeconds: 47,
+            completedAt: Date()
+        )
+        OpenCodeAlertManager.shared.deliverAlert(for: sample, config: openCodeConfig)
+        showNotice("Đã gửi thông báo thử nghiệm OpenCode (âm thanh + HUD nổi).", kind: .success)
+    }
+
+    public func previewOpenCodeSound(_ soundName: String) {
+        openCodeConfig.soundName = soundName
+        OpenCodeAlertManager.shared.playPreviewSound(soundName)
+    }
+
+    public func focusOpenCodeHost() {
+        OpenCodeAlertManager.shared.focusOpenCodeHostApp()
+    }
+
+    public func clearOpenCodeAlertHistory() {
+        openCodeRecentAlerts = []
+        openCodeUnreadCompletions = 0
+        persistOpenCodeState()
+    }
+
     public var menuBarCompactLabel: String {
         switch menuBarDisplayMode {
         case .minimal:
@@ -504,13 +623,13 @@ public final class AppViewModel: ObservableObject {
             return String(format: "%d%% • %.1fG", cpu, freeG)
         case .withAI:
             let cpu = Int((snapshot?.cpu.totalBusyPercent ?? 0).rounded())
-            if let agyRem = aiSnapshot?.antigravity?.fiveHourQuota?.remainingPercent,
-               let gptRem = aiSnapshot?.chatGPT?.fiveHourQuota?.remainingPercent {
-                let minRem = Int(min(agyRem, gptRem).rounded())
-                return "\(cpu)% • AI \(minRem)%"
-            } else if let agyRem = aiSnapshot?.antigravity?.fiveHourQuota?.remainingPercent {
-                return "\(cpu)% • AI \(Int(agyRem.rounded()))%"
-            } else if let gptRem = aiSnapshot?.chatGPT?.fiveHourQuota?.remainingPercent {
+            if !openCodeRunningSessions.isEmpty {
+                return "\(cpu)% • OC \(openCodeRunningSessions.count)⚡"
+            }
+            if openCodeUnreadCompletions > 0 {
+                return "\(cpu)% • OC ✓"
+            }
+            if let gptRem = aiSnapshot?.chatGPT?.fiveHourQuota?.remainingPercent {
                 return "\(cpu)% • GPT \(Int(gptRem.rounded()))%"
             }
             guard let snap = snapshot else { return "--%" }

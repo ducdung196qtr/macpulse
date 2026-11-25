@@ -365,6 +365,8 @@ private struct PopoverRootView: View {
         case .cleaner:
             return (vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty) ? HudTheme.amber : nil
         case .aiPulse:
+            if !vm.openCodeRunningSessions.isEmpty { return HudTheme.cyan }
+            if vm.openCodeUnreadCompletions > 0 { return HudTheme.emerald }
             if let gpt = vm.aiSnapshot?.chatGPT, gpt.limitReached { return HudTheme.crimson }
             return nil
         default:
