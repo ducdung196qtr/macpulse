@@ -442,6 +442,31 @@ private struct PopoverRootView: View {
             .buttonStyle(.plain)
             .help("Đổi kiểu hiển thị trên thanh Menu Bar (CPU•RAM / CPU•AI / Gọn)")
 
+            // Autopilot Auto-Optimize Status Pill
+            Button {
+                vm.cleanerFocus = .all
+                vm.selectedTab = .cleaner
+            } label: {
+                let isOn = vm.autoOptimizeConfig.isEnabled
+                let pillColor = vm.isAutoOptimizing ? HudTheme.cyan : (isOn ? HudTheme.emerald : HudTheme.textMuted)
+                HStack(spacing: 3.5) {
+                    Image(systemName: "bolt.shield.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(pillColor)
+                    Text(vm.isAutoOptimizing ? "OPT" : "AUTO")
+                        .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                        .foregroundStyle(isOn ? HudTheme.textPrimary : HudTheme.textMuted)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3.5)
+                .background((isOn ? pillColor.opacity(0.16) : HudTheme.cardBg), in: Capsule())
+                .overlay(Capsule().strokeBorder(pillColor.opacity(isOn ? 0.45 : 0.25), lineWidth: 0.7))
+            }
+            .buttonStyle(.plain)
+            .help(vm.autoOptimizeConfig.isEnabled
+                  ? "Autopilot Tự động Tối ưu đang BẬT (Đã dọn: \(Formatters.bytes(vm.autoOptimizeLifetimeFreedBytes))) — bấm để cấu hình"
+                  : "Autopilot Tự động Tối ưu đang TẮT — bấm để mở cấu hình")
+
             Spacer()
 
             HudButton(title: "Quét", icon: "arrow.clockwise", color: primaryAccent, filled: false, compact: true) {

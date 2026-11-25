@@ -131,6 +131,18 @@ public final class AppViewModel: ObservableObject {
     @Published public var isRescuingChrome: Bool = false
     @Published public var cleanupOutcomeMessage: String?
 
+    // MARK: - Autopilot Auto-Optimizer State
+    @Published public var autoOptimizeConfig: AutoOptimizeConfig {
+        didSet {
+            guard !isApplyingProgrammaticAutoOptUpdate else { return }
+            persistAutoOptimizeState()
+        }
+    }
+    @Published public var autoOptimizeLastRunAt: Date?
+    @Published public var autoOptimizeLifetimeFreedBytes: UInt64 = 0
+    @Published public var autoOptimizeHistory: [AutoOptimizeRunRecord] = []
+    @Published public var isAutoOptimizing: Bool = false
+
     // MARK: - Browser Tabs Inspector State
     @Published public var openBrowserTabs: [BrowserTabItem] = []
     @Published public var duplicateTabs: [DuplicateTabGroup] = []
@@ -175,13 +187,16 @@ public final class AppViewModel: ObservableObject {
     private let telemetry = SystemTelemetryReader()
     private let benchmarkRunner = BenchmarkRunner()
     private let cleanupScanner = CleanupScanner()
+    private let autoOptStore = AutoOptimizerStore()
     private let imeStore = VietnameseSettingsStore()
     private let inputTapService: MacInputTapService
 
     private var schedulerTimer: Timer?
+    private var autoOptimizeTimer: Timer?
     private var lastProcessScanDate: Date = .distantPast
     private var isRefreshing: Bool = false
     private var isApplyingProgrammaticIMEUpdate = false
+    private var isApplyingProgrammaticAutoOptUpdate = false
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distObservers: [NSObjectProtocol] = []
 
@@ -196,6 +211,15 @@ public final class AppViewModel: ObservableObject {
         let rawSavedSite = UserDefaults.standard.string(forKey: PrefKeys.selectedLocalSite) ?? ""
         self.availableLocalSites = discoveredSites
         self.selectedLocalSiteForBench = discoveredSites.contains(rawSavedSite) ? rawSavedSite : ""
+
+        let loadedAutoOpt = autoOptStore.load()
+        if !FileManager.default.fileExists(atPath: autoOptStore.fileURL.path) {
+            try? autoOptStore.save(loadedAutoOpt)
+        }
+        self.autoOptimizeConfig = loadedAutoOpt.config
+        self.autoOptimizeLastRunAt = loadedAutoOpt.lastRunAt
+        self.autoOptimizeLifetimeFreedBytes = loadedAutoOpt.totalLifetimeFreedBytes
+        self.autoOptimizeHistory = loadedAutoOpt.history
 
         let loaded = imeStore.load()
         if !FileManager.default.fileExists(atPath: imeStore.fileURL.path) {
@@ -218,6 +242,7 @@ public final class AppViewModel: ObservableObject {
         inputTapService.start()
         refreshNow(includeProcesses: true)
         startAdaptiveScheduler()
+        startAutoOptimizeScheduler()
 
         // Defer non-critical background scans slightly so app launch is instant (<100ms)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
@@ -227,10 +252,14 @@ public final class AppViewModel: ObservableObject {
             guard let self, self.lastCleanupScanAt == .distantPast else { return }
             self.scanCleanup()
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) { [weak self] in
+            self?.checkAndRunAutoOptimizeIfNeeded()
+        }
     }
 
     deinit {
         schedulerTimer?.invalidate()
+        autoOptimizeTimer?.invalidate()
         noticeDismissTask?.cancel()
         for obs in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
@@ -618,6 +647,115 @@ public final class AppViewModel: ObservableObject {
 
     public var previousBenchmark: BenchmarkResult? {
         benchmarkHistory.count >= 2 ? benchmarkHistory[1] : nil
+    }
+
+    // MARK: - Autopilot Auto-Optimizer (Zero-Lag Background Sweeper)
+    private func persistAutoOptimizeState() {
+        let state = PersistedAutoOptimizeState(
+            config: autoOptimizeConfig,
+            lastRunAt: autoOptimizeLastRunAt,
+            totalLifetimeFreedBytes: autoOptimizeLifetimeFreedBytes,
+            history: Array(autoOptimizeHistory.prefix(20))
+        )
+        try? autoOptStore.save(state)
+    }
+
+    private func startAutoOptimizeScheduler() {
+        autoOptimizeTimer?.invalidate()
+        autoOptimizeTimer = Timer.scheduledTimer(withTimeInterval: 600.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkAndRunAutoOptimizeIfNeeded()
+            }
+        }
+    }
+
+    public func checkAndRunAutoOptimizeIfNeeded() {
+        guard !isAutoOptimizing && !isCleaning && !isRescuingChrome else { return }
+        guard let snap = snapshot else { return }
+        let availableGB = Double(snap.disk.availableBytes) / 1_073_741_824.0
+        let cpuBusy = snap.cpu.totalBusyPercent
+        guard let trigger = AutoOptimizerEngine.evaluateTrigger(
+            config: autoOptimizeConfig,
+            lastRunAt: autoOptimizeLastRunAt,
+            availableDiskGB: availableGB,
+            cpuBusyPercent: cpuBusy
+        ) else { return }
+        executeAutoOptimize(trigger: trigger, priority: .background, announceIfZero: false)
+    }
+
+    public func runAutoOptimizeNow() {
+        guard !isAutoOptimizing && !isCleaning && !isRescuingChrome else { return }
+        executeAutoOptimize(trigger: .manual, priority: .userInitiated, announceIfZero: true)
+    }
+
+    private func executeAutoOptimize(trigger: AutoOptimizeTrigger, priority: TaskPriority, announceIfZero: Bool) {
+        isAutoOptimizing = true
+        let cfg = autoOptimizeConfig
+        Task.detached(priority: priority) { [cleanupScanner, autoOptStore] in
+            let record = AutoOptimizerEngine.runPass(config: cfg, trigger: trigger)
+            let shouldRescan = record.freedBytes > 0 || trigger == .manual
+            let rescanned: [CleanupCandidate]? = shouldRescan ? cleanupScanner.scan() : nil
+
+            await MainActor.run {
+                self.autoOptimizeLastRunAt = record.timestamp
+                self.autoOptimizeLifetimeFreedBytes += record.freedBytes
+                self.autoOptimizeHistory.insert(record, at: 0)
+                if self.autoOptimizeHistory.count > 20 {
+                    self.autoOptimizeHistory = Array(self.autoOptimizeHistory.prefix(20))
+                }
+
+                let state = PersistedAutoOptimizeState(
+                    config: self.autoOptimizeConfig,
+                    lastRunAt: self.autoOptimizeLastRunAt,
+                    totalLifetimeFreedBytes: self.autoOptimizeLifetimeFreedBytes,
+                    history: self.autoOptimizeHistory
+                )
+                try? autoOptStore.save(state)
+
+                if let rescanned {
+                    self.cleanupCandidates = rescanned
+                    self.lastCleanupScanAt = Date()
+                    self.selectedCleanupIDs = Set(rescanned.filter { $0.defaultSelected && $0.tier == .safeAutoClean }.map(\.id))
+                }
+
+                self.isAutoOptimizing = false
+
+                if record.freedBytes > 0 {
+                    let msg = "Autopilot (\(trigger.rawValue)): \(record.summary)"
+                    self.cleanupOutcomeMessage = msg
+                    self.showNotice(msg, kind: .success)
+                    self.refreshNow(includeProcesses: false)
+                } else if announceIfZero {
+                    let msg = "Autopilot: \(record.summary)"
+                    self.cleanupOutcomeMessage = msg
+                    self.showNotice(msg, kind: .info)
+                }
+            }
+        }
+    }
+
+    public var autoOptimizeLastRunLabel: String {
+        guard let last = autoOptimizeLastRunAt else { return "Chưa chạy" }
+        let elapsed = max(0, Date().timeIntervalSince(last))
+        if elapsed < 60 { return "Vừa xong" }
+        if elapsed < 3600 { return "\(Int(elapsed / 60)) phút trước" }
+        if elapsed < 86400 {
+            let h = Int(elapsed / 3600)
+            let m = Int((elapsed.truncatingRemainder(dividingBy: 3600)) / 60)
+            return m > 0 ? "\(h)h \(m)p trước" : "\(h) giờ trước"
+        }
+        return "\(Int(elapsed / 86400)) ngày trước"
+    }
+
+    public var autoOptimizeNextRunLabel: String {
+        guard autoOptimizeConfig.isEnabled else { return "Đang tắt" }
+        guard let last = autoOptimizeLastRunAt else { return "Tự động theo dõi" }
+        let target = last.addingTimeInterval(TimeInterval(max(1, autoOptimizeConfig.intervalHours) * 3600))
+        let rem = target.timeIntervalSinceNow
+        if rem <= 60 { return "Sắp chạy" }
+        let h = Int(rem / 3600)
+        let m = Int((rem.truncatingRemainder(dividingBy: 3600)) / 60)
+        return h > 0 ? "Sau \(h)h \(m)p" : "Sau \(m) phút"
     }
 
     // MARK: - Cleanup & Chrome Rescue

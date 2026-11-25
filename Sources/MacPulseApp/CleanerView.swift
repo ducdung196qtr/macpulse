@@ -4,6 +4,7 @@ import MacPulseCore
 struct CleanerView: View {
     @ObservedObject var vm: AppViewModel
     @State private var isRescueManuallyExpanded: Bool = false
+    @State private var isAutopilotSettingsExpanded: Bool = false
 
     private var visibleFilter: CleanerFocusSection {
         vm.cleanerFocus
@@ -52,6 +53,10 @@ struct CleanerView: View {
                             .buttonStyle(.plain)
                         }
                         .hudCard(accent: HudTheme.emerald, chamfer: 7, padding: 9)
+                    }
+
+                    if visibleFilter == .all {
+                        autopilotOptimizerCard
                     }
 
                     heroSummaryCard
@@ -142,6 +147,332 @@ struct CleanerView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private static let historyDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm dd/MM"
+        return df
+    }()
+
+    // MARK: - Autopilot Background Auto-Optimizer Card
+    private var autopilotOptimizerCard: some View {
+        let enabled = vm.autoOptimizeConfig.isEnabled
+        let cardAccent: Color = vm.isAutoOptimizing ? HudTheme.cyan : (enabled ? HudTheme.emerald : HudTheme.textMuted)
+        let statusText: String = vm.isAutoOptimizing ? "OPTIMIZING" : (enabled ? "ONLINE" : "STANDBY")
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                ZStack {
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .fill(cardAccent.opacity(0.20))
+                        .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(cardAccent.opacity(0.6), lineWidth: 0.8))
+                        .frame(width: 30, height: 30)
+                    Image(systemName: "bolt.shield.fill")
+                        .foregroundStyle(cardAccent)
+                        .font(.system(size: 13.5, weight: .bold))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("AUTOPILOT TỰ ĐỘNG TỐI ƯU")
+                            .font(.system(size: 11, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.textPrimary)
+
+                        Text(statusText)
+                            .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                            .padding(.horizontal, 5.5)
+                            .padding(.vertical, 1.5)
+                            .background(cardAccent.opacity(0.20), in: Capsule())
+                            .foregroundStyle(cardAccent)
+                    }
+                    Text("Tự dọn ngầm cache cũ >\(vm.autoOptimizeConfig.staleCacheDays) ngày, rác ShipIt, log phình & bot /tmp mồ côi.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                // Quick Master Switch
+                Button {
+                    vm.autoOptimizeConfig.isEnabled.toggle()
+                } label: {
+                    ZStack(alignment: enabled ? .trailing : .leading) {
+                        Capsule()
+                            .fill(enabled ? HudTheme.emerald.opacity(0.28) : HudTheme.insetBg)
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(enabled ? HudTheme.emerald.opacity(0.85) : HudTheme.textMuted.opacity(0.45), lineWidth: 1)
+                            )
+                            .frame(width: 36, height: 19)
+                        Circle()
+                            .fill(enabled ? HudTheme.emerald : HudTheme.textMuted)
+                            .frame(width: 13, height: 13)
+                            .padding(.horizontal, 3)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(enabled ? "Tắt chế độ Tự động tối ưu ngầm" : "Bật chế độ Tự động tối ưu ngầm")
+            }
+
+            // Compact 3-cell HUD Telemetry Row
+            HStack(spacing: 7) {
+                autopilotMetricCell(
+                    label: "ĐÃ TỰ DỌN",
+                    value: Formatters.bytes(vm.autoOptimizeLifetimeFreedBytes),
+                    accent: HudTheme.emerald
+                )
+                autopilotMetricCell(
+                    label: "LẦN GẦN NHẤT",
+                    value: vm.autoOptimizeLastRunLabel,
+                    accent: HudTheme.cyan
+                )
+                autopilotMetricCell(
+                    label: "LỊCH KẾ TIẾP",
+                    value: vm.autoOptimizeNextRunLabel,
+                    accent: enabled ? HudTheme.textPrimary : HudTheme.textMuted
+                )
+            }
+
+            // Action Bar
+            HStack(spacing: 7) {
+                HudButton(
+                    title: vm.isAutoOptimizing ? "Đang tối ưu..." : "Tối ưu ngay",
+                    icon: "sparkles",
+                    color: HudTheme.emerald,
+                    filled: true,
+                    compact: true,
+                    disabled: vm.isAutoOptimizing || vm.isCleaning || vm.isRescuingChrome
+                ) {
+                    vm.runAutoOptimizeNow()
+                }
+
+                HudButton(
+                    title: isAutopilotSettingsExpanded ? "Ẩn cài đặt" : "Cấu hình & Lịch sử",
+                    icon: isAutopilotSettingsExpanded ? "chevron.up" : "slider.horizontal.3",
+                    color: HudTheme.cyan,
+                    filled: false,
+                    compact: true
+                ) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isAutopilotSettingsExpanded.toggle()
+                    }
+                }
+
+                Spacer()
+
+                Text("\(vm.autoOptimizeConfig.intervalHours)H • >\(vm.autoOptimizeConfig.staleCacheDays)D • <\(Int(vm.autoOptimizeConfig.lowDiskTriggerGB))G")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.textMuted)
+            }
+
+            if isAutopilotSettingsExpanded {
+                autopilotSettingsPanel
+            }
+        }
+        .hudCard(accent: cardAccent, chamfer: 10, padding: 11, showBrackets: true)
+    }
+
+    private func autopilotMetricCell(label: String, value: String, accent: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(HudTheme.textMuted)
+            Text(value)
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .foregroundStyle(accent)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
+    }
+
+    private var autopilotSettingsPanel: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Rectangle()
+                .fill(HudTheme.cyan.opacity(0.18))
+                .frame(height: 0.7)
+
+            // Parameter Selectors
+            VStack(alignment: .leading, spacing: 6) {
+                autopilotIntSelector(
+                    title: "Xoá cache cũ hơn",
+                    options: [(3, "3 ngày"), (7, "7 ngày"), (14, "14 ngày")],
+                    selection: $vm.autoOptimizeConfig.staleCacheDays,
+                    accent: HudTheme.emerald
+                )
+                autopilotIntSelector(
+                    title: "Chu kỳ quét tự động",
+                    options: [(2, "2 giờ"), (6, "6 giờ"), (12, "12 giờ"), (24, "24 giờ")],
+                    selection: $vm.autoOptimizeConfig.intervalHours,
+                    accent: HudTheme.cyan
+                )
+                autopilotDoubleSelector(
+                    title: "Tự kích hoạt khi SSD <",
+                    options: [(20.0, "20 GB"), (30.0, "30 GB"), (40.0, "40 GB")],
+                    selection: $vm.autoOptimizeConfig.lowDiskTriggerGB,
+                    accent: HudTheme.amber
+                )
+            }
+            .padding(8)
+            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
+
+            // 4 Granular Rule Switches
+            VStack(spacing: 7) {
+                HudToggleRow(
+                    title: "Dọn cache cũ quá hạn (Trình duyệt, AI, Dev)",
+                    subtitle: "Chỉ xoá tệp không dùng quá \(vm.autoOptimizeConfig.staleCacheDays) ngày trong ~/Library/Caches & .npm/.cache.",
+                    isOn: $vm.autoOptimizeConfig.autoCleanStaleCaches,
+                    accent: HudTheme.emerald
+                )
+                HudToggleRow(
+                    title: "Dọn rác cập nhật ShipIt, OpenMausBot & QuickLook",
+                    subtitle: "Tự dọn bản vá/update cũ (>24h) và bộ đệm ảnh xem nhanh Finder.",
+                    isOn: $vm.autoOptimizeConfig.autoCleanUpdaterGarbage,
+                    accent: HudTheme.emerald
+                )
+                HudToggleRow(
+                    title: "Tự cắt rỗng file log LocalWP phình to (>15 MB)",
+                    subtitle: "Truncate trực tiếp giữ nguyên file, không ảnh hưởng website hay database.",
+                    isOn: $vm.autoOptimizeConfig.autoTruncateOversizedLogs,
+                    accent: HudTheme.cyan
+                )
+                HudToggleRow(
+                    title: "Dọn thư mục /tmp bot mồ côi (Playwright / agent-browser)",
+                    subtitle: "Chỉ xoá thư mục cũ >30p không có tiến trình nào đang sử dụng.",
+                    isOn: $vm.autoOptimizeConfig.autoCleanOrphanTempProfiles,
+                    accent: HudTheme.cyan
+                )
+            }
+            .padding(9)
+            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.7))
+
+            // Safety Guardrail Banner
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.shield.fill")
+                    .foregroundStyle(HudTheme.emerald)
+                    .font(.caption)
+                Text("Chạy ở độ ưu tiên nền thấp nhất, tự hoãn khi CPU ≥ 65% (nghỉ tối thiểu 60p). Tuyệt đối KHÔNG đụng Chrome đang mở, Extension, Cookies, Thùng rác, Xcode DerivedData hay model AI.")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(HudTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(HudTheme.emerald.opacity(0.09), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.emerald.opacity(0.30), lineWidth: 0.7))
+
+            // Recent History
+            if !vm.autoOptimizeHistory.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("NHẬT KÝ TỐI ƯU GẦN ĐÂY")
+                        .font(.system(size: 8.5, weight: .black, design: .monospaced))
+                        .tracking(0.6)
+                        .foregroundStyle(HudTheme.textMuted)
+
+                    ForEach(vm.autoOptimizeHistory.prefix(4)) { rec in
+                        autopilotHistoryRow(rec)
+                    }
+                }
+            }
+        }
+    }
+
+    private func autopilotIntSelector(
+        title: String,
+        options: [(Int, String)],
+        selection: Binding<Int>,
+        accent: Color
+    ) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(HudTheme.textSecondary)
+            Spacer()
+            HStack(spacing: 4) {
+                ForEach(options, id: \.0) { val, label in
+                    let active = selection.wrappedValue == val
+                    Button {
+                        selection.wrappedValue = val
+                    } label: {
+                        Text(label)
+                            .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(active ? accent.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? accent.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
+                            .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func autopilotDoubleSelector(
+        title: String,
+        options: [(Double, String)],
+        selection: Binding<Double>,
+        accent: Color
+    ) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(HudTheme.textSecondary)
+            Spacer()
+            HStack(spacing: 4) {
+                ForEach(options, id: \.0) { val, label in
+                    let active = abs(selection.wrappedValue - val) < 0.1
+                    Button {
+                        selection.wrappedValue = val
+                    } label: {
+                        Text(label)
+                            .font(.system(size: 9.5, weight: active ? .black : .semibold, design: .monospaced))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(active ? accent.opacity(0.24) : HudTheme.cardBg, in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? accent.opacity(0.75) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.7))
+                            .foregroundStyle(active ? HudTheme.textPrimary : HudTheme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func autopilotHistoryRow(_ rec: AutoOptimizeRunRecord) -> some View {
+        let badgeColor: Color = rec.trigger == .lowDisk ? HudTheme.amber : (rec.trigger == .manual ? HudTheme.cyan : HudTheme.emerald)
+        return HStack(spacing: 6) {
+            Text(rec.trigger.rawValue.uppercased())
+                .font(.system(size: 7.5, weight: .black, design: .monospaced))
+                .padding(.horizontal, 4.5)
+                .padding(.vertical, 1.5)
+                .background(badgeColor.opacity(0.18), in: Capsule())
+                .foregroundStyle(badgeColor)
+
+            Text(Self.historyDateFormatter.string(from: rec.timestamp))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(HudTheme.textMuted)
+
+            Text(rec.summary)
+                .font(.system(size: 9.5))
+                .foregroundStyle(rec.freedBytes > 0 ? HudTheme.textPrimary : HudTheme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4.5)
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
     }
 
     // MARK: - Hero Telemetry Summary

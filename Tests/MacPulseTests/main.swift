@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import MacPulseCore
 
@@ -1217,6 +1218,171 @@ suite.test("v2.0: Antigravity GetUserStatus parser separates Gemini and Claude/G
     try expectEqual(Int((parsed?.quotaPools[0].quota.remainingPercent ?? 0).rounded()), 85)
     try expectEqual(parsed?.quotaPools[1].id, "agy-partner")
     try expectEqual(Int((parsed?.quotaPools[1].quota.remainingPercent ?? 0).rounded()), 95)
+}
+
+suite.test("v2.0: AutoOptimizerEngine.evaluateTrigger respects disabled, high CPU, 60m cooldown, low disk, and schedule") {
+    let now = Date()
+    let cfg = AutoOptimizeConfig(isEnabled: true, intervalHours: 6, staleCacheDays: 7, lowDiskTriggerGB: 30.0)
+
+    // 1. Disabled -> nil
+    var disabledCfg = cfg
+    disabledCfg.isEnabled = false
+    try expect(AutoOptimizerEngine.evaluateTrigger(config: disabledCfg, lastRunAt: nil, availableDiskGB: 10.0, cpuBusyPercent: 10.0, now: now) == nil, "Disabled config must return nil")
+
+    // 2. High CPU (>= 65%) -> nil
+    try expect(AutoOptimizerEngine.evaluateTrigger(config: cfg, lastRunAt: nil, availableDiskGB: 10.0, cpuBusyPercent: 72.0, now: now) == nil, "High CPU must pause auto-optimize")
+
+    // 3. Within 60-minute cooldown -> nil even under low disk
+    try expect(AutoOptimizerEngine.evaluateTrigger(config: cfg, lastRunAt: now.addingTimeInterval(-1800), availableDiskGB: 12.0, cpuBusyPercent: 15.0, now: now) == nil, "60m cooldown must prevent thrashing")
+
+    // 4. Low disk past cooldown -> .lowDisk
+    try expectEqual(AutoOptimizerEngine.evaluateTrigger(config: cfg, lastRunAt: now.addingTimeInterval(-4000), availableDiskGB: 22.0, cpuBusyPercent: 20.0, now: now), .lowDisk)
+
+    // 5. Healthy disk before interval -> nil
+    try expect(AutoOptimizerEngine.evaluateTrigger(config: cfg, lastRunAt: now.addingTimeInterval(-7200), availableDiskGB: 80.0, cpuBusyPercent: 15.0, now: now) == nil, "Healthy disk before 6h interval should return nil")
+
+    // 6. Healthy disk past interval -> .scheduled
+    try expectEqual(AutoOptimizerEngine.evaluateTrigger(config: cfg, lastRunAt: now.addingTimeInterval(-7 * 3600), availableDiskGB: 80.0, cpuBusyPercent: 15.0, now: now), .scheduled)
+}
+
+suite.test("v2.0: AutoOptimizerEngine.runPass sweeps stale caches/updaters/logs/dead tmp while protecting active files, Cookies, and Trash") {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("MacPulseAutoOptTest-\(UUID().uuidString)")
+    let mockHome = root.appendingPathComponent("home", isDirectory: true)
+    let mockTmp = root.appendingPathComponent("tmp", isDirectory: true)
+    defer { try? fm.removeItem(at: root) }
+
+    func setFileTimes(_ url: URL, date: Date) {
+        let secs = Int(date.timeIntervalSince1970)
+        var tv = [timeval(tv_sec: secs, tv_usec: 0), timeval(tv_sec: secs, tv_usec: 0)]
+        utimes(url.path, &tv)
+    }
+
+    let now = Date()
+    let tenDaysAgo = now.addingTimeInterval(-10 * 86400)
+    let twoDaysAgo = now.addingTimeInterval(-2 * 86400)
+    let twoHoursAgo = now.addingTimeInterval(-7200)
+    let oneHourAgo = now.addingTimeInterval(-3600)
+    let fiveMinsAgo = now.addingTimeInterval(-300)
+
+    // 1. Stale vs Fresh browser cache
+    let chromeCache = mockHome.appendingPathComponent("Library/Caches/Google/Chrome/Default/Cache")
+    try fm.createDirectory(at: chromeCache, withIntermediateDirectories: true)
+    let staleCacheFile = chromeCache.appendingPathComponent("stale.bin")
+    let freshCacheFile = chromeCache.appendingPathComponent("fresh.bin")
+    try Data(repeating: 0xAA, count: 64_000).write(to: staleCacheFile)
+    try Data(repeating: 0xBB, count: 64_000).write(to: freshCacheFile)
+    setFileTimes(staleCacheFile, date: tenDaysAgo)
+    setFileTimes(freshCacheFile, date: oneHourAgo)
+
+    // 2. Old ShipIt .app updater package (2 days old)
+    let shipItApp = mockHome.appendingPathComponent("Library/Caches/com.google.antigravity.ShipIt/OldUpdate.app")
+    let shipItContents = shipItApp.appendingPathComponent("Contents")
+    try fm.createDirectory(at: shipItContents, withIntermediateDirectories: true)
+    let shipItFile = shipItContents.appendingPathComponent("payload.bin")
+    try Data(repeating: 0xCC, count: 50_000).write(to: shipItFile)
+    setFileTimes(shipItFile, date: twoDaysAgo)
+    setFileTimes(shipItApp, date: twoDaysAgo)
+
+    // 3. Protected Chrome Cookies & User Trash (30 days old — MUST NEVER BE TOUCHED)
+    let cookiesDir = mockHome.appendingPathComponent("Library/Application Support/Google/Chrome/Default")
+    try fm.createDirectory(at: cookiesDir, withIntermediateDirectories: true)
+    let cookiesFile = cookiesDir.appendingPathComponent("Cookies")
+    try Data(repeating: 0x11, count: 8192).write(to: cookiesFile)
+    setFileTimes(cookiesFile, date: now.addingTimeInterval(-30 * 86400))
+
+    let trashDir = mockHome.appendingPathComponent(".Trash")
+    try fm.createDirectory(at: trashDir, withIntermediateDirectories: true)
+    let trashFile = trashDir.appendingPathComponent("keep-me.txt")
+    try Data("important".utf8).write(to: trashFile)
+    setFileTimes(trashFile, date: now.addingTimeInterval(-30 * 86400))
+
+    // 4. Oversized LocalWP log (> 15 MB)
+    let localLogDir = mockHome.appendingPathComponent("Local Sites/testsite/logs/php")
+    try fm.createDirectory(at: localLogDir, withIntermediateDirectories: true)
+    let bigLog = localLogDir.appendingPathComponent("error.log")
+    try Data(repeating: 0x41, count: 16 * 1_048_576).write(to: bigLog)
+
+    // 5. /tmp automation profiles: 1 live, 1 dead old, 1 recent
+    let liveProf = mockTmp.appendingPathComponent("playwright_chromiumdev_profile-LIVE")
+    let deadProf = mockTmp.appendingPathComponent("playwright_chromiumdev_profile-DEAD")
+    let recentProf = mockTmp.appendingPathComponent("agent-browser-RECENT")
+    for p in [liveProf, deadProf, recentProf] {
+        try fm.createDirectory(at: p, withIntermediateDirectories: true)
+        try Data(repeating: 0xDD, count: 32_000).write(to: p.appendingPathComponent("data.bin"))
+    }
+    setFileTimes(liveProf, date: twoHoursAgo)
+    setFileTimes(deadProf, date: twoHoursAgo)
+    setFileTimes(recentProf, date: fiveMinsAgo)
+
+    let cfg = AutoOptimizeConfig(
+        isEnabled: true,
+        intervalHours: 6,
+        staleCacheDays: 7,
+        lowDiskTriggerGB: 30.0,
+        autoCleanStaleCaches: true,
+        autoCleanUpdaterGarbage: true,
+        autoTruncateOversizedLogs: true,
+        autoCleanOrphanTempProfiles: true
+    )
+
+    let record = AutoOptimizerEngine.runPass(
+        config: cfg,
+        trigger: .scheduled,
+        homeDirectory: mockHome,
+        tempDirectory: mockTmp,
+        liveProcessArgs: ["/Applications/Google Chrome.app --user-data-dir=/tmp/playwright_chromiumdev_profile-LIVE"],
+        now: now
+    )
+
+    try expect(!fm.fileExists(atPath: staleCacheFile.path), "10-day-old cache file must be deleted")
+    try expect(fm.fileExists(atPath: freshCacheFile.path), "1-hour-old fresh cache file must stay intact")
+    try expect(!fm.fileExists(atPath: shipItApp.path), "2-day-old ShipIt .app bundle must be removed")
+    try expect(fm.fileExists(atPath: cookiesFile.path), "Chrome Cookies must NEVER be deleted")
+    try expect(fm.fileExists(atPath: trashFile.path), "User Trash must NEVER be auto-deleted")
+
+    try expect(fm.fileExists(atPath: bigLog.path), "Truncated log file must still exist")
+    try expectEqual(CleanupScanner.fileSize(at: bigLog), 0)
+
+    try expect(fm.fileExists(atPath: liveProf.path), "Active live automation /tmp profile must NOT be deleted")
+    try expect(!fm.fileExists(atPath: deadProf.path), "Dead old /tmp profile must be deleted")
+    try expect(fm.fileExists(atPath: recentProf.path), "Recent (<30m) /tmp profile must stay intact")
+
+    try expectEqual(record.truncatedLogsCount, 1)
+    try expectEqual(record.cleanedOrphanProfilesCount, 1)
+    try expect(record.removedFilesCount >= 2, "Should have removed stale cache file + ShipIt package")
+    try expect(record.freedBytes >= 16 * 1_048_576, "Freed bytes should include truncated log and stale caches")
+}
+
+suite.test("v2.0: AutoOptimizerStore persists and reloads config, lifetime freed bytes, and history") {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseAutoOptStore-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let store = AutoOptimizerStore(fileURL: tmp)
+    let rec = AutoOptimizeRunRecord(
+        trigger: .lowDisk,
+        freedBytes: 256_000_000,
+        removedFilesCount: 42,
+        truncatedLogsCount: 1,
+        cleanedOrphanProfilesCount: 2,
+        summary: "Giải phóng 256 MB"
+    )
+    let state = PersistedAutoOptimizeState(
+        config: AutoOptimizeConfig(isEnabled: true, intervalHours: 12, staleCacheDays: 3, lowDiskTriggerGB: 40.0),
+        lastRunAt: Date(timeIntervalSince1970: 1_700_000_000),
+        totalLifetimeFreedBytes: 512_000_000,
+        history: [rec]
+    )
+    try store.save(state)
+
+    let reloaded = store.load()
+    try expectEqual(reloaded.config.intervalHours, 12)
+    try expectEqual(reloaded.config.staleCacheDays, 3)
+    try expectEqual(reloaded.config.lowDiskTriggerGB, 40.0)
+    try expectEqual(reloaded.totalLifetimeFreedBytes, 512_000_000)
+    try expectEqual(reloaded.history.count, 1)
+    try expectEqual(reloaded.history.first?.trigger, .lowDisk)
+    try expectEqual(reloaded.history.first?.removedFilesCount, 42)
 }
 
 suite.summaryAndExit()
