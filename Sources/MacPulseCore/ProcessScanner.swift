@@ -215,7 +215,7 @@ public enum ProcessScanner {
         var orphanPIDs = Set<Int32>()
         var orphanProfileDirs = Set<String>()
 
-        for p in processes where isOrphanPuppeteerCommand(p.args) {
+        for p in processes where isOrphanPuppeteerCommand(p.args, comm: p.comm) {
             orphanPIDs.insert(p.pid)
             if let profileDir = extractUserDataDir(from: p.args) {
                 orphanProfileDirs.insert(profileDir)
@@ -252,7 +252,7 @@ public enum ProcessScanner {
             if orphanPIDs.contains(p.pid) {
                 let key = "orphan:puppeteer-chrome"
                 var b = buckets[key] ?? Bucket(
-                    displayName: "Chrome ngầm / Automation (Playwright/Puppeteer)",
+                    displayName: "Chrome Automation & agent-browser (Chạy ngầm)",
                     bundleID: nil,
                     isOrphan: true,
                     action: .killOrphanPuppeteer,
@@ -322,12 +322,16 @@ public enum ProcessScanner {
         }
     }
 
-    public static func isOrphanPuppeteerCommand(_ args: String) -> Bool {
+    public static func isOrphanPuppeteerCommand(_ args: String, comm: String = "") -> Bool {
         let lower = args.lowercased()
+        let lowerComm = comm.lowercased()
         if lower.contains(".mac-remote-hub/chrome-profile")
             || lower.contains("remoting_me2me_host")
             || lower.contains("chromeremotedesktop") {
             return false
+        }
+        if lowerComm.contains("agent-browser") || lower.contains("/agent-browser") || lower.contains("agent-browser mcp") || lower.contains("agent-browser-profiles") {
+            return true
         }
         let isPuppeteer = (lower.contains("--enable-automation") || lower.contains("puppeteer_dev_chrome_profile"))
             && (lower.contains("puppeteer_") || lower.contains("chrome-devtools-mcp"))
@@ -337,8 +341,11 @@ public enum ProcessScanner {
         if lower.contains("playwright_chromiumdev_profile") {
             return true
         }
-        if lower.contains("openmausbot") || lower.contains("agent-browser-profiles") {
-            return true
+        if lower.contains("openmausbot") {
+            // Match browser engines or automation profiles spawned by OpenMausBot, but never the main app GUI binary
+            if lower.contains("google chrome") || lower.contains("browser-engine") || lower.contains("agent-browser") || lower.contains("--user-data-dir=") {
+                return true
+            }
         }
         let isChromeBinary = lower.contains("/applications/google chrome.app/") || lower.contains("google chrome.app/contents/")
         let isHeadlessFlag = lower.contains("--headless")
@@ -350,6 +357,7 @@ public enum ProcessScanner {
             || lower.contains("puppeteer")
             || lower.contains("chrome-devtools-mcp")
             || lower.contains("openmausbot")
+            || lower.contains("agent-browser")
         return isChromeBinary && isHeadlessFlag && isAutomationFlag
     }
 
@@ -511,10 +519,10 @@ public enum ProcessScanner {
         if isOrphan {
             return ProcessGuidance(
                 safetyLevel: .safeNow,
-                whatIsIt: "Trình duyệt Chrome chạy ẩn (--enable-automation) do tool/MCP hoặc script Puppeteer bật lên mà chưa tự thoát.",
-                currentActivityHint: "Đang giữ ngầm \(ramText) RAM và \(cpuText)\(procText) mà không có cửa sổ hiển thị cho bạn.",
-                impactIfClosed: "Không ảnh hưởng tới Google Chrome chính bạn đang mở (giữ nguyên toàn bộ tab, WordPress, mật khẩu).",
-                recommendedHowTo: "Bấm \"Dọn ngay\" để giải phóng tức thì \(ramText) RAM."
+                whatIsIt: "Tiến trình Chrome headless & agent-browser chạy ngầm (Playwright, Puppeteer, OpenMausBot hoặc MCP).",
+                currentActivityHint: "Đang chiếm giữ ngầm \(ramText) RAM và \(cpuText)\(procText) mà không có cửa sổ hiển thị cho bạn.",
+                impactIfClosed: "Hoàn toàn an toàn: Không ảnh hưởng tới Google Chrome thường bạn đang mở (giữ nguyên toàn bộ tab, WordPress, mật khẩu).",
+                recommendedHowTo: "Bấm \"Dừng & Reset sạch\" để giải phóng tức thì \(ramText) RAM và gỡ kẹt profile tự động."
             )
         }
 

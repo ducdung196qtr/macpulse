@@ -26,6 +26,28 @@ public struct ChromeRescueReport: Sendable, Equatable {
     }
 }
 
+public struct AutomationResetReport: Sendable, Equatable {
+    public let stoppedPIDs: [Int32]
+    public let removedLockFiles: [String]
+    public let cleanedProfileDirs: [String]
+    public let freedBytes: UInt64
+    public let errors: [String]
+
+    public init(
+        stoppedPIDs: [Int32] = [],
+        removedLockFiles: [String] = [],
+        cleanedProfileDirs: [String] = [],
+        freedBytes: UInt64 = 0,
+        errors: [String] = []
+    ) {
+        self.stoppedPIDs = stoppedPIDs
+        self.removedLockFiles = removedLockFiles
+        self.cleanedProfileDirs = cleanedProfileDirs
+        self.freedBytes = freedBytes
+        self.errors = errors
+    }
+}
+
 public enum CleanupExecutor {
     public static func execute(
         candidates: [CleanupCandidate],
@@ -102,6 +124,134 @@ public enum CleanupExecutor {
         ]
     }
 
+    public static func automationProfileLockPaths(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        let fm = FileManager.default
+        var lockURLs: [URL] = []
+        let lockNames = ["SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"]
+
+        let checkProfileDir = { (dirURL: URL) in
+            for name in lockNames {
+                let lockURL = dirURL.appendingPathComponent(name)
+                var st = Darwin.stat()
+                if lstat(lockURL.path, &st) == 0 {
+                    lockURLs.append(lockURL)
+                }
+            }
+        }
+
+        // 1. ~/.openmausbot/agent-browser-profiles/*
+        let openMausProfiles = homeDirectory.appendingPathComponent(".openmausbot/agent-browser-profiles")
+        if let subs = try? fm.contentsOfDirectory(at: openMausProfiles, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for sub in subs {
+                checkProfileDir(sub)
+            }
+        }
+
+        // 2. ~/.agent-browser/*
+        let agentBrowserDir = homeDirectory.appendingPathComponent(".agent-browser")
+        if let subs = try? fm.contentsOfDirectory(at: agentBrowserDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for sub in subs {
+                checkProfileDir(sub)
+                let subProfiles = sub.appendingPathComponent("profiles")
+                if let nested = try? fm.contentsOfDirectory(at: subProfiles, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                    for n in nested {
+                        checkProfileDir(n)
+                    }
+                }
+            }
+        }
+
+        // 3. /tmp/ profiles
+        let tmpDir = URL(fileURLWithPath: "/tmp")
+        if let tmpSubs = try? fm.contentsOfDirectory(at: tmpDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for sub in tmpSubs {
+                let name = sub.lastPathComponent
+                if name.hasPrefix("playwright_chromiumdev_profile-")
+                    || name.hasPrefix("puppeteer_dev_chrome_profile-")
+                    || name.hasPrefix("agent-browser-") {
+                    checkProfileDir(sub)
+                }
+            }
+        }
+
+        return lockURLs
+    }
+
+    public static func rescueAndResetBrowserAutomation(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> AutomationResetReport {
+        let fm = FileManager.default
+        let canonicalHome = homeDirectory.resolvingSymlinksInPath().path
+        var stopped: [Int32] = []
+        var removedLocks: [String] = []
+        var cleanedDirs: [String] = []
+        var freed: UInt64 = 0
+        var errors: [String] = []
+
+        // 1. Gracefully terminate orphan puppeteer & agent-browser processes first
+        let killRes = terminateOrphanPuppeteerProcesses(force: false)
+        stopped.append(contentsOf: killRes.killed)
+
+        // 2. Wait up to 300ms
+        usleep(300_000)
+
+        // 3. Force kill any remaining orphan automation processes
+        if let live = try? ProcessScanner.scanLiveProcesses() {
+            let groups = ProcessScanner.aggregate(live)
+            let remainingPIDs = groups.filter(\.isOrphanAutomation).flatMap(\.pids)
+            if !remainingPIDs.isEmpty {
+                let forceRes = terminatePIDs(remainingPIDs, force: true)
+                for pid in forceRes.killed where !stopped.contains(pid) {
+                    stopped.append(pid)
+                }
+            }
+        }
+
+        // 4. Clean lock files from all automation profiles
+        let locks = automationProfileLockPaths(homeDirectory: homeDirectory)
+        for lockURL in locks {
+            guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) || lockURL.path.hasPrefix("/tmp/") else { continue }
+            var st = Darwin.stat()
+            if lstat(lockURL.path, &st) == 0 {
+                if Darwin.unlink(lockURL.path) == 0 {
+                    removedLocks.append(lockURL.lastPathComponent)
+                } else {
+                    do {
+                        try fm.removeItem(at: lockURL)
+                        removedLocks.append(lockURL.lastPathComponent)
+                    } catch {
+                        errors.append("Không gỡ được \(lockURL.lastPathComponent): \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+
+        // 5. Clean ephemeral /tmp profile dirs (playwright_*, puppeteer_*, agent-browser-*)
+        let tmpDir = URL(fileURLWithPath: "/tmp")
+        if let tmpEntries = try? fm.contentsOfDirectory(at: tmpDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for entry in tmpEntries {
+                let name = entry.lastPathComponent
+                if name.hasPrefix("playwright_chromiumdev_profile-")
+                    || name.hasPrefix("puppeteer_dev_chrome_profile-")
+                    || name.hasPrefix("agent-browser-") {
+                    let sz = CleanupScanner.directorySize(at: entry)
+                    if (try? fm.removeItem(at: entry)) != nil {
+                        freed += sz
+                        cleanedDirs.append(name)
+                    }
+                }
+            }
+        }
+
+        return AutomationResetReport(
+            stoppedPIDs: stopped,
+            removedLockFiles: removedLocks,
+            cleanedProfileDirs: cleanedDirs,
+            freedBytes: freed,
+            errors: errors
+        )
+    }
+
     public static func rescueAndCleanChrome(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         relaunch: Bool = true,
@@ -147,8 +297,9 @@ public enum CleanupExecutor {
         // Only remove locks if Chrome is not running or if skipProcessTermination is true (e.g. testing)
         let isStillRunning = !skipProcessTermination && ((try? ProcessScanner.scanLiveProcesses())?.contains(where: { ProcessScanner.isAnyGoogleChromeProcess($0) }) ?? false)
         if !isStillRunning {
-            for lockURL in chromeLockPaths(homeDirectory: homeDirectory) {
-                guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) else { continue }
+            let allLocks = chromeLockPaths(homeDirectory: homeDirectory) + automationProfileLockPaths(homeDirectory: homeDirectory)
+            for lockURL in allLocks {
+                guard isInsideAllowedHome(url: lockURL, canonicalHome: canonicalHome) || lockURL.path.hasPrefix("/tmp/") else { continue }
                 var st = Darwin.stat()
                 if lstat(lockURL.path, &st) == 0 {
                     if Darwin.unlink(lockURL.path) == 0 {

@@ -235,6 +235,41 @@ public enum VietnameseAppDetector {
         "com.panic.Nova"
     ]
 
+    public static let browserAndSearchBundles: Set<String> = [
+        "com.google.chrome",
+        "com.google.chrome.canary",
+        "com.apple.safari",
+        "com.apple.safaritechnologypreview",
+        "com.apple.spotlight",
+        "com.microsoft.edgemac",
+        "com.microsoft.edge",
+        "com.microsoft.edge.dev",
+        "com.brave.browser",
+        "com.operasoftware.opera",
+        "com.operasoftware.operagx",
+        "org.mozilla.firefox",
+        "ru.yandex.desktop.yandex-browser",
+        "com.vivaldi.vivaldi",
+        "company.thebrowser.browser"
+    ]
+
+    public static func isBrowserOrSearchApp(bundleID: String, appName: String = "") -> Bool {
+        let bLower = bundleID.lowercased()
+        if browserAndSearchBundles.contains(bLower) { return true }
+        let nLower = appName.lowercased()
+        if bLower.contains("chrome") || bLower.contains("safari") || bLower.contains("edge")
+            || bLower.contains("brave") || bLower.contains("opera") || bLower.contains("firefox")
+            || bLower.contains("arc") || bLower.contains("spotlight") {
+            return true
+        }
+        if nLower.contains("chrome") || nLower.contains("safari") || nLower.contains("edge")
+            || nLower.contains("brave") || nLower.contains("opera") || nLower.contains("firefox")
+            || nLower.contains("arc") || nLower == "spotlight" {
+            return true
+        }
+        return false
+    }
+
     public static func isVPSOrRemoteApp(bundleID: String, appName: String = "") -> Bool {
         if vpsAndRemoteDesktopBundles.contains(bundleID) { return true }
         let bLower = bundleID.lowercased()

@@ -525,6 +525,39 @@ public final class AppViewModel: ObservableObject {
         rawProcesses.filter { ProcessScanner.isChromeRendererProcess($0) }
     }
 
+    public var orphanAutomationGroup: ProcessGroupSummary? {
+        processGroups.first(where: { $0.isOrphanAutomation })
+    }
+
+    public func resetBrowserAutomation() {
+        guard !isRescuingChrome && !isCleaning else { return }
+        isRescuingChrome = true
+        cleanupOutcomeMessage = nil
+
+        Task.detached(priority: .userInitiated) {
+            let report = CleanupExecutor.rescueAndResetBrowserAutomation()
+            let rescanned = self.cleanupScanner.scan()
+            let remainingDefaults = Set(rescanned.filter { $0.defaultSelected && $0.tier == .safeAutoClean }.map(\.id))
+            await MainActor.run {
+                self.cleanupCandidates = rescanned
+                self.selectedCleanupIDs = remainingDefaults
+                self.isRescuingChrome = false
+                var msg = "Đã dừng & reset \(report.stoppedPIDs.count) tiến trình automation ngầm (headless Chrome / agent-browser)."
+                if !report.removedLockFiles.isEmpty {
+                    msg += " Gỡ kẹt \(report.removedLockFiles.count) file locks."
+                }
+                if report.freedBytes > 0 {
+                    msg += " Thu hồi \(Formatters.bytes(report.freedBytes))."
+                }
+                self.cleanupOutcomeMessage = report.errors.isEmpty
+                    ? msg
+                    : "\(msg) (Lưu ý: \(report.errors.joined(separator: "; ")))"
+                self.actionNotice = self.cleanupOutcomeMessage
+                self.refreshNow(includeProcesses: true)
+            }
+        }
+    }
+
     public func killStuckChromeRenderers(forceAll: Bool = false) {
         guard !isRescuingChrome else { return }
         Task.detached(priority: .userInitiated) {
@@ -596,9 +629,7 @@ public final class AppViewModel: ObservableObject {
 
     public func requestCloseProcess(_ group: ProcessGroupSummary) {
         if group.isOrphanAutomation {
-            let res = CleanupExecutor.terminateOrphanPuppeteerProcesses(force: false)
-            actionNotice = "Đã dọn \(res.killed.count) tiến trình Chrome automation ngầm (không ảnh hưởng Chrome chính)."
-            refreshAfterDelay()
+            resetBrowserAutomation()
             return
         }
 
@@ -618,9 +649,7 @@ public final class AppViewModel: ObservableObject {
         pendingTerminationGroup = nil
 
         if group.isOrphanAutomation {
-            let res = CleanupExecutor.terminateOrphanPuppeteerProcesses(force: force)
-            actionNotice = "Đã dọn \(res.killed.count) tiến trình automation ngầm."
-            refreshAfterDelay()
+            resetBrowserAutomation()
             return
         }
 
@@ -668,16 +697,7 @@ public final class AppViewModel: ObservableObject {
         case .none:
             break
         case .killOrphanPuppeteer:
-            let hadNormalChrome = processGroups.contains { $0.id == "app:Google Chrome" && !$0.isOrphanAutomation }
-            let res = CleanupExecutor.terminateOrphanPuppeteerProcesses()
-            actionNotice = "Đã tắt \(res.killed.count) tiến trình Chrome headless ngầm."
-            if !hadNormalChrome {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                proc.arguments = ["-a", "Google Chrome"]
-                try? proc.run()
-            }
-            refreshAfterDelay()
+            resetBrowserAutomation()
         case .quitAppGracefully, .terminateUserProcess:
             if let group = processGroups.first(where: { $0.id == targetID }) {
                 requestCloseProcess(group)

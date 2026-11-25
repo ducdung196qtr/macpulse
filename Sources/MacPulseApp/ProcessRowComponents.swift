@@ -113,12 +113,12 @@ struct ProcessRowView: View {
             Button {
                 vm.requestCloseProcess(group)
             } label: {
-                Text("Dọn")
+                Text("Dừng & Reset")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Color.green.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundStyle(.green)
+                    .background(Color.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
+                    .foregroundStyle(.orange)
             }
             .buttonStyle(.plain)
         } else if group.actionKind == .inspectBrowserTabs {

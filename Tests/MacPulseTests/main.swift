@@ -927,6 +927,100 @@ suite.test("IME 43: Test and commonly mistyped English words natural typing") {
     try expectEqual(engSaved.simulate("error "), "error ")
 }
 
+suite.test("IME 44: Comprehensive typing for 'vừa', 'vườn', 'cửa', 'lửa', 'người', 'được', 'nữa', 'mưa'") {
+    let store = VietnameseSettingsStore()
+    let saved = store.load().settings
+    let engSaved = VietnameseEngine(settings: saved)
+
+    try expectEqual(engSaved.simulate("vuwaf"), "vừa")
+    try expectEqual(engSaved.simulate("vuwaf "), "vừa ")
+    try expectEqual(engSaved.simulate("vuawf"), "vừa")
+    try expectEqual(engSaved.simulate("vuawf "), "vừa ")
+    try expectEqual(engSaved.simulate("vuafw"), "vừa")
+    try expectEqual(engSaved.simulate("vuafw "), "vừa ")
+    try expectEqual(engSaved.simulate("vwaf"), "vừa")
+    try expectEqual(engSaved.simulate("vwaf "), "vừa ")
+    try expectEqual(engSaved.simulate("vuwfa"), "vừa")
+    try expectEqual(engSaved.simulate("vuwfa "), "vừa ")
+
+    try expectEqual(engSaved.simulate("cuwar"), "cửa")
+    try expectEqual(engSaved.simulate("cuawr"), "cửa")
+    try expectEqual(engSaved.simulate("cuarw"), "cửa")
+    try expectEqual(engSaved.simulate("luwar"), "lửa")
+    try expectEqual(engSaved.simulate("luawr"), "lửa")
+    try expectEqual(engSaved.simulate("nuwax"), "nữa")
+    try expectEqual(engSaved.simulate("nuawx"), "nữa")
+    try expectEqual(engSaved.simulate("muwa"), "mưa")
+    try expectEqual(engSaved.simulate("muaw"), "mưa")
+    try expectEqual(engSaved.simulate("ddwocj"), "được")
+    try expectEqual(engSaved.simulate("nguwoif"), "người")
+    try expectEqual(engSaved.simulate("nguoifw"), "người")
+    try expectEqual(engSaved.simulate("nguoiwf"), "người")
+
+    try expectEqual(engSaved.simulate("vuonwf"), "vườn")
+    try expectEqual(engSaved.simulate("vuonfw"), "vườn")
+    try expectEqual(engSaved.simulate("vuownf"), "vườn")
+    try expectEqual(engSaved.simulate("vuwonf"), "vườn")
+    try expectEqual(engSaved.simulate("vuongwf"), "vường")
+    try expectEqual(engSaved.simulate("vuongfw"), "vường")
+}
+
+suite.test("VietnameseAppDetector identifies browsers and search apps accurately") {
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.google.Chrome"), "Google Chrome should be identified as browser")
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.apple.Safari"), "Safari should be identified as browser")
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.apple.Spotlight"), "Spotlight should be identified as browser/search")
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.microsoft.edgemac"), "Edge should be identified as browser")
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.brave.Browser"), "Brave should be identified as browser")
+    try expect(VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "company.thebrowser.Browser"), "Arc should be identified as browser")
+    try expect(!VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.apple.Terminal"), "Terminal should not be identified as browser")
+    try expect(!VietnameseAppDetector.isBrowserOrSearchApp(bundleID: "com.microsoft.WindowsApp"), "Windows App should not be identified as browser")
+}
+
+suite.test("ProcessScanner identifies agent-browser and OpenMausBot automation correctly") {
+    // 1. agent-browser CLI
+    let agentBrowserComm = "agent-browser"
+    let agentBrowserArgs = "/Applications/OpenMausBot.app/Contents/Resources/browser-engine/agent-browser mcp --tools core --no-webmcp"
+    try expect(ProcessScanner.isOrphanPuppeteerCommand(agentBrowserArgs, comm: agentBrowserComm), "agent-browser binary should be recognized as orphan automation")
+
+    // 2. OpenMausBot headless Chrome
+    let openMausArgs = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless=new --user-data-dir=/Users/ducdung/.openmausbot/agent-browser-profiles/c7bafa6b11f3ad680ce7f3c6438d425d --remote-debugging-port=0"
+    try expect(ProcessScanner.isOrphanPuppeteerCommand(openMausArgs, comm: "Google Chrome"), "OpenMausBot headless Chrome should be recognized as orphan automation")
+
+    // 3. Regular Google Chrome must NOT be flagged
+    let regularChromeArgs = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    try expect(!ProcessScanner.isOrphanPuppeteerCommand(regularChromeArgs, comm: "Google Chrome"), "Normal user Google Chrome should NEVER be flagged as automation")
+
+    // 4. Chrome Remote Desktop must NOT be flagged
+    let remotingArgs = "/Library/PrivilegedHelperTools/remoting_me2me_host --user-data-dir=/Users/ducdung/.mac-remote-hub/chrome-profile"
+    try expect(!ProcessScanner.isOrphanPuppeteerCommand(remotingArgs, comm: "remoting_me2me_host"), "Remote Desktop must never be flagged")
+}
+
+suite.test("CleanupExecutor discovers and cleans automation lock files without touching regular chrome") {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseAutoLockTest-\(UUID().uuidString)")
+    let fm = FileManager.default
+    defer { try? fm.removeItem(at: tmp) }
+
+    let profileSub = tmp.appendingPathComponent(".openmausbot/agent-browser-profiles/test-profile-hash")
+    try fm.createDirectory(at: profileSub, withIntermediateDirectories: true)
+
+    let lock1 = profileSub.appendingPathComponent("SingletonLock")
+    let lock2 = profileSub.appendingPathComponent("DevToolsActivePort")
+    try "test-lock".write(to: lock1, atomically: true, encoding: .utf8)
+    try "9222\n/devtools/browser/abc".write(to: lock2, atomically: true, encoding: .utf8)
+
+    let locks = CleanupExecutor.automationProfileLockPaths(homeDirectory: tmp)
+    try expectEqual(locks.count, 2)
+    try expect(locks.contains { $0.lastPathComponent == "SingletonLock" })
+    try expect(locks.contains { $0.lastPathComponent == "DevToolsActivePort" })
+
+    // Test rescue and reset cleans these lock files
+    let report = CleanupExecutor.rescueAndResetBrowserAutomation(homeDirectory: tmp)
+    try expect(report.removedLockFiles.contains("SingletonLock"), "SingletonLock should be removed")
+    try expect(report.removedLockFiles.contains("DevToolsActivePort"), "DevToolsActivePort should be removed")
+    try expect(!fm.fileExists(atPath: lock1.path), "Lock 1 should not exist on disk")
+    try expect(!fm.fileExists(atPath: lock2.path), "Lock 2 should not exist on disk")
+}
+
 suite.summaryAndExit()
 
 

@@ -521,6 +521,51 @@ struct CleanerView: View {
                 RoundedRectangle(cornerRadius: 7)
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             )
+
+            // Action 3: Chrome Automation & agent-browser Stuck Rescue
+            VStack(alignment: .leading, spacing: 6) {
+                let autoGroup = vm.orphanAutomationGroup
+                HStack(spacing: 6) {
+                    Image(systemName: autoGroup != nil ? "exclamationmark.octagon.fill" : "terminal.fill")
+                        .foregroundStyle(autoGroup != nil ? .orange : .secondary)
+                    Text("Dừng & Reset Chrome Automation (agent-browser / MCP)")
+                        .font(.caption.weight(.bold))
+                    Spacer()
+                    if let auto = autoGroup {
+                        Text("\(auto.processCount) tiến trình · \(String(format: "%.0f%%", auto.totalCPUPercent)) CPU · \(Formatters.bytes(auto.totalRSSBytes))")
+                            .font(.caption2.monospacedDigit().weight(.bold))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text(autoGroup != nil
+                    ? "Cụm headless Chrome & agent-browser đang chạy ngầm ngốn tài nguyên và giữ khoá profile. Dừng sạch và gỡ khoá SingletonLock/DevToolsActivePort mà không ảnh hưởng Chrome thường."
+                    : "Dừng mọi tiến trình Chrome headless / agent-browser ngầm và dọn khoá profile tự động.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button {
+                        vm.resetBrowserAutomation()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.counterclockwise.circle.fill")
+                            Text(autoGroup != nil ? "Dừng & Reset sạch cụm Automation" : "Reset sạch Chrome Automation")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(autoGroup != nil ? .orange : .secondary)
+                    .controlSize(.small)
+                    .disabled(vm.isRescuingChrome || vm.isCleaning)
+                }
+            }
+            .padding(9)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(vm.orphanAutomationGroup != nil ? Color.orange.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

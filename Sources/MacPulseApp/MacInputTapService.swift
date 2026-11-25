@@ -241,9 +241,18 @@ public final class MacInputTapService {
     @discardableResult
     public static func terminateConflictingApps() -> Int {
         var terminated = 0
+        let selfPID = ProcessInfo.processInfo.processIdentifier
         for app in NSWorkspace.shared.runningApplications {
-            guard let bid = app.bundleIdentifier else { continue }
-            if conflictBundleMap.contains(where: { $0.bundleID.caseInsensitiveCompare(bid) == .orderedSame }) {
+            guard app.processIdentifier != selfPID else { continue }
+            let bid = app.bundleIdentifier ?? ""
+            let name = app.localizedName ?? app.executableURL?.lastPathComponent ?? ""
+            let isConflict = conflictBundleMap.contains(where: {
+                $0.bundleID.caseInsensitiveCompare(bid) == .orderedSame ||
+                $0.label.caseInsensitiveCompare(name) == .orderedSame
+            }) || bid.lowercased().contains("evkey") || name.lowercased().contains("evkey")
+               || bid.lowercased().contains("openkey") || name.lowercased().contains("openkey")
+               || bid.lowercased().contains("gotiengviet") || name.lowercased().contains("gotiengviet")
+            if isConflict {
                 if app.terminate() || app.forceTerminate() {
                     terminated += 1
                 }
@@ -699,43 +708,78 @@ public final class MacInputTapService {
         fixChrome: Bool
     ) {
         guard let src = eventSource else { return }
-        let now = mach_absolute_time()
 
-        // Direct event injection via the active tap proxy with strictly monotonic timestamps.
-        if backspaceCount > 0 {
-            for i in 0..<backspaceCount {
+        let isBrowser = fixChrome && VietnameseAppDetector.isBrowserOrSearchApp(bundleID: bundleID)
+
+        if backspaceCount > 0 && isBrowser {
+            // Cancel / collapse active browser Omnibox, Safari address bar, or Spotlight
+            // inline autocomplete prediction highlight by inserting a Zero-Width Non-Joiner (U+200C).
+            // This replaces the highlighted suggestion without deleting the user's typed stem.
+            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
+                down.flags = []
+                down.timestamp = mach_absolute_time()
+                down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                var zwnj: [UniChar] = [0x200C]
+                down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &zwnj)
+                down.tapPostEvent(proxy)
+            }
+            usleep(600)
+            if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+                up.flags = []
+                up.timestamp = mach_absolute_time()
+                up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                var zwnj: [UniChar] = [0x200C]
+                up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &zwnj)
+                up.tapPostEvent(proxy)
+            }
+            usleep(600)
+        }
+
+        let totalBackspaces = (backspaceCount > 0 && isBrowser) ? (backspaceCount + 1) : backspaceCount
+
+        // Inject backspaces with paced inter-event intervals and strictly monotonic timestamps
+        // so Chromium/Electron/WebKit DOM input loops cleanly process each deletion without dropping events.
+        if totalBackspaces > 0 {
+            for _ in 0..<totalBackspaces {
                 if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) {
                     down.flags = []
-                    down.timestamp = now + UInt64(i * 2)
+                    down.timestamp = mach_absolute_time()
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     down.tapPostEvent(proxy)
                 }
+                usleep(800)
                 if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
                     up.flags = []
-                    up.timestamp = now + UInt64(i * 2 + 1)
+                    up.timestamp = mach_absolute_time()
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
                 }
+                usleep(800)
             }
         }
 
-        // Post replacement string at once in a single event pair with strictly monotonic timestamp
+        // Inject replacement characters one character at a time (never pack multiple Unicode
+        // characters into a single key event, which causes Chromium Omnibox and native NSTextViews
+        // to drop subsequent characters or fail composition).
         if !text.isEmpty {
-            var utf16 = Array(text.utf16)
-            let baseTime = now + UInt64(backspaceCount * 2)
-            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
-                down.flags = []
-                down.timestamp = baseTime + 1
-                down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                down.tapPostEvent(proxy)
-            }
-            if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-                up.flags = []
-                up.timestamp = baseTime + 2
-                up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                up.tapPostEvent(proxy)
+            for ch in text {
+                var utf16 = Array(String(ch).utf16)
+                if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
+                    down.flags = []
+                    down.timestamp = mach_absolute_time()
+                    down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                    down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                    down.tapPostEvent(proxy)
+                }
+                usleep(600)
+                if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+                    up.flags = []
+                    up.timestamp = mach_absolute_time()
+                    up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                    up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                    up.tapPostEvent(proxy)
+                }
+                usleep(600)
             }
         }
     }
