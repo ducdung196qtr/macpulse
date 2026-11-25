@@ -17,10 +17,10 @@ struct ProcessRowView: View {
 
     private var safetyColor: Color {
         switch group.guidance.safetyLevel {
-        case .safeNow: return PulseTheme.emerald
-        case .cautionSaveFirst: return PulseTheme.amber
-        case .remoteKeepAlive: return PulseTheme.crimson
-        case .systemProtected: return .secondary
+        case .safeNow: return HudTheme.emerald
+        case .cautionSaveFirst: return HudTheme.amber
+        case .remoteKeepAlive: return HudTheme.crimson
+        case .systemProtected: return HudTheme.textMuted
         }
     }
 
@@ -36,36 +36,37 @@ struct ProcessRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(group.guidance.safetyLevel.badgeLabel)
-                    .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                Text(group.guidance.safetyLevel.badgeLabel.uppercased())
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .padding(.horizontal, 5.5)
                     .padding(.vertical, 2)
-                    .background(safetyColor.opacity(0.15), in: Capsule())
-                    .overlay(Capsule().strokeBorder(safetyColor.opacity(0.30), lineWidth: 0.6))
+                    .background(safetyColor.opacity(0.16), in: Capsule())
+                    .overlay(Capsule().strokeBorder(safetyColor.opacity(0.45), lineWidth: 0.6))
                     .foregroundStyle(safetyColor)
 
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(group.displayName)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(HudTheme.textPrimary)
                             .lineLimit(1)
                         if group.processCount > 1 {
                             Text("×\(group.processCount)")
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HudTheme.cyan.opacity(0.8))
                         }
                     }
                     if highlightRAM {
                         Text(String(format: "CPU %.0f%%", group.totalCPUPercent))
                             .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(HudTheme.textSecondary)
                     }
                 }
 
                 Spacer(minLength: 4)
 
                 if !highlightRAM {
-                    VStack(alignment: .trailing, spacing: 2) {
+                    VStack(alignment: .trailing, spacing: 2.5) {
                         Text(String(format: "%.0f%%", group.totalCPUPercent))
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundStyle(cpuColor)
@@ -74,11 +75,11 @@ struct ProcessRowView: View {
                     .frame(width: 44, alignment: .trailing)
                 }
 
-                VStack(alignment: .trailing, spacing: 2) {
+                VStack(alignment: .trailing, spacing: 2.5) {
                     Text(Formatters.bytes(group.totalRSSBytes))
-                        .font(.system(size: 11, weight: highlightRAM ? .bold : .medium, design: .monospaced))
-                        .foregroundStyle(highlightRAM ? .primary : .secondary)
-                    microLoadBar(ratio: ramIntensity, color: highlightRAM ? PulseTheme.cyan : PulseTheme.cobalt.opacity(0.8))
+                        .font(.system(size: 10.5, weight: highlightRAM ? .bold : .semibold, design: .monospaced))
+                        .foregroundStyle(highlightRAM ? HudTheme.cyan : HudTheme.textSecondary)
+                    microLoadBar(ratio: ramIntensity, color: highlightRAM ? HudTheme.cyan : HudTheme.cobalt)
                 }
                 .frame(width: 68, alignment: .trailing)
 
@@ -93,7 +94,7 @@ struct ProcessRowView: View {
                 } label: {
                     Image(systemName: showGuidanceCard ? "info.circle.fill" : "info.circle")
                         .font(.system(size: 13.5))
-                        .foregroundStyle(showGuidanceCard ? PulseTheme.cyan : .secondary)
+                        .foregroundStyle(showGuidanceCard ? HudTheme.cyan : HudTheme.textMuted)
                         .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
@@ -114,94 +115,72 @@ struct ProcessRowView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .telemetryCard(
-            accent: group.isOrphanAutomation ? PulseTheme.amber : (showGuidanceCard ? PulseTheme.cyan : nil),
-            cornerRadius: 9,
-            padding: 8
+        .hudCard(
+            accent: group.isOrphanAutomation ? HudTheme.amber : (showGuidanceCard ? HudTheme.cyan : HudTheme.cyan.opacity(0.32)),
+            chamfer: 6,
+            padding: 8,
+            showBrackets: group.isOrphanAutomation || showGuidanceCard
         )
     }
 
     private func microLoadBar(ratio: Double, color: Color) -> some View {
         ZStack(alignment: .leading) {
-            Capsule().fill(Color.primary.opacity(0.08))
+            Capsule().fill(HudTheme.insetBg)
             Capsule()
                 .fill(color)
                 .frame(width: max(2, 34 * CGFloat(max(0, min(1, ratio)))))
+                .shadow(color: color.opacity(0.6), radius: 2)
         }
-        .frame(width: 34, height: 2.5)
+        .frame(width: 34, height: 2.8)
     }
 
     @ViewBuilder
     private var actionTrailingControl: some View {
         if group.isOrphanAutomation {
-            Button {
+            HudButton(title: "Dừng & Reset", color: HudTheme.amber, filled: true, compact: true) {
                 vm.requestCloseProcess(group)
-            } label: {
-                Text("Dừng & Reset")
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(PulseTheme.amber.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(PulseTheme.amber.opacity(0.4), lineWidth: 0.7))
-                    .foregroundStyle(PulseTheme.amber)
             }
-            .buttonStyle(.plain)
         } else if group.actionKind == .inspectBrowserTabs {
             HStack(spacing: 4) {
-                Button {
+                HudButton(title: "Soi tab", color: HudTheme.cyan, filled: false, compact: true) {
                     vm.scanBrowserTabs()
                     if vm.selectedTab != .overview && vm.selectedTab != .cleaner {
                         vm.selectedTab = .overview
                     }
-                } label: {
-                    Text("Soi tab")
-                        .font(.system(size: 10, weight: .semibold))
-                        .padding(.horizontal, 6.5)
-                        .padding(.vertical, 3.5)
-                        .background(PulseTheme.cyan.opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
-                        .foregroundStyle(PulseTheme.cyan)
                 }
-                .buttonStyle(.plain)
 
                 Button {
                     vm.pendingTerminationGroup = group
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9.5, weight: .bold))
-                        .frame(width: 20, height: 20)
-                        .background(PulseTheme.crimson.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
-                        .foregroundStyle(PulseTheme.crimson)
+                        .frame(width: 22, height: 22)
+                        .background(HudTheme.crimson.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(HudTheme.crimson.opacity(0.45), lineWidth: 0.7))
+                        .foregroundStyle(HudTheme.crimson)
                 }
                 .buttonStyle(.plain)
                 .help("Đóng cả ứng dụng \(group.displayName) (sẽ hỏi xác nhận)")
             }
         } else if group.guidance.safetyLevel == .cautionSaveFirst {
-            Button {
+            HudButton(title: "Đóng", color: HudTheme.crimson, filled: false, compact: true) {
                 vm.requestCloseProcess(group)
-            } label: {
-                Text("Đóng")
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(PulseTheme.crimson.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundStyle(PulseTheme.crimson)
             }
-            .buttonStyle(.plain)
             .accessibilityIdentifier("close_\(group.id)")
             .help("Đóng \(group.displayName) (hỏi xác nhận Đóng nhẹ hoặc Ép tắt)")
         } else {
             Image(systemName: group.guidance.safetyLevel == .remoteKeepAlive ? "antenna.radiowaves.left.and.right" : "lock.fill")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(group.guidance.safetyLevel == .remoteKeepAlive ? HudTheme.crimson : HudTheme.textMuted)
                 .frame(width: 44, alignment: .center)
                 .help(group.guidance.impactIfClosed)
         }
     }
 
     private var cpuColor: Color {
-        if group.totalCPUPercent >= 50 { return PulseTheme.crimson }
-        if group.totalCPUPercent >= 18 { return PulseTheme.amber }
-        return .primary
+        if group.totalCPUPercent >= 50 { return HudTheme.crimson }
+        if group.totalCPUPercent >= 18 { return HudTheme.amber }
+        return HudTheme.textPrimary
     }
 }
 
@@ -211,40 +190,40 @@ struct GuidanceDetailCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(guidance.whatIsIt)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(HudTheme.textPrimary)
             HStack(alignment: .top, spacing: 5) {
-                Text("Trạng thái:")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(PulseTheme.cyan)
+                Text("TRẠNG THÁI:")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.cyan)
                 Text(guidance.currentActivityHint)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(HudTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 5) {
-                Text("Tác động:")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(PulseTheme.amber)
+                Text("TÁC ĐỘNG:")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.amber)
                 Text(guidance.impactIfClosed)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(HudTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 5) {
-                Text("Khuyến nghị:")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(PulseTheme.emerald)
+                Text("KHUYẾN NGHỊ:")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.emerald)
                 Text(guidance.recommendedHowTo)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(HudTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PulseTheme.cyan.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(PulseTheme.cyan.opacity(0.20), lineWidth: 0.6))
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.cyan.opacity(0.28), lineWidth: 0.7))
     }
 }
 
@@ -256,59 +235,50 @@ struct InlineConfirmTerminationCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(PulseTheme.amber)
+                    .foregroundStyle(HudTheme.amber)
                 Text("Xác nhận đóng \(group.displayName)")
-                    .font(.subheadline.weight(.bold))
+                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundStyle(HudTheme.textPrimary)
                 Spacer()
                 Text("~\(Formatters.bytes(group.totalRSSBytes)) RAM")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(PulseTheme.cyan)
+                    .foregroundStyle(HudTheme.cyan)
             }
 
             Text("Trạng thái: \(group.guidance.currentActivityHint)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption2)
+                .foregroundStyle(HudTheme.textSecondary)
 
             Text("Ảnh hưởng khi tắt: \(group.guidance.impactIfClosed)")
-                .font(.caption)
-                .foregroundStyle(.primary)
+                .font(.caption2)
+                .foregroundStyle(HudTheme.textPrimary)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 if group.actionKind == .inspectBrowserTabs {
-                    Button("Soi từng tab (Khuyên dùng)") {
+                    HudButton(title: "Soi từng tab", icon: "macwindow", color: HudTheme.cyan, filled: true, compact: true) {
                         vm.pendingTerminationGroup = nil
                         vm.scanBrowserTabs()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(PulseTheme.cyan)
-                    .controlSize(.small)
                 }
 
-                Button("Đóng nhẹ (Cmd+Q)") {
+                HudButton(title: "Đóng nhẹ (Cmd+Q)", color: HudTheme.amber, filled: true, compact: true) {
                     vm.confirmTermination(for: group, force: false)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(PulseTheme.amber)
-                .controlSize(.small)
 
                 if group.canForceTerminate {
-                    Button("Ép tắt (khi treo)") {
+                    HudButton(title: "Ép tắt", color: HudTheme.crimson, filled: false, compact: true) {
                         vm.confirmTermination(for: group, force: true)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(PulseTheme.crimson)
-                    .controlSize(.small)
                 }
 
                 Spacer()
 
-                Button("Huỷ") {
+                HudButton(title: "Huỷ", color: HudTheme.textSecondary, filled: false, compact: true) {
                     vm.pendingTerminationGroup = nil
                 }
-                .controlSize(.small)
             }
         }
-        .telemetryCard(accent: PulseTheme.amber, cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.amber, chamfer: 9, padding: 11, showBrackets: true)
     }
 }
 
@@ -319,21 +289,19 @@ struct BrowserTabsInspectorCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "macwindow.on.rectangle")
-                    .foregroundStyle(PulseTheme.cyan)
-                Text("Quản lý Tab Đa Trình Duyệt (\(vm.openBrowserTabs.count) tab)")
-                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundStyle(HudTheme.cyan)
+                Text("TAB SCANNER (\(vm.openBrowserTabs.count) TAB)")
+                    .font(.system(size: 11.5, weight: .black, design: .monospaced))
+                    .foregroundStyle(HudTheme.textPrimary)
                 Spacer()
-                Button(vm.isScanningTabs ? "Đang quét..." : "Quét lại") {
+                HudButton(title: vm.isScanningTabs ? "Đang quét..." : "Quét lại", color: HudTheme.cyan, filled: false, compact: true, disabled: vm.isScanningTabs) {
                     vm.scanBrowserTabs()
                 }
-                .controlSize(.mini)
-                .disabled(vm.isScanningTabs)
-
                 Button {
                     vm.showTabInspector = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HudTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
             }
@@ -342,7 +310,7 @@ struct BrowserTabsInspectorCard: View {
                 ForEach(vm.tabWarnings, id: \.self) { w in
                     Text("Lưu ý quyền Automation: \(w)")
                         .font(.caption2)
-                        .foregroundStyle(PulseTheme.amber)
+                        .foregroundStyle(HudTheme.amber)
                 }
             }
 
@@ -350,44 +318,44 @@ struct BrowserTabsInspectorCard: View {
                 HStack {
                     Image(systemName: "square.on.square.dashed")
                         .font(.caption)
-                        .foregroundStyle(PulseTheme.amber)
+                        .foregroundStyle(HudTheme.amber)
                     Text("Phát hiện \(vm.duplicateTabs.count) nhóm URL mở trùng lặp")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(PulseTheme.amber)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HudTheme.amber)
                     Spacer()
-                    Button("Đóng tất cả bản trùng") {
+                    HudButton(title: "Đóng bản trùng", color: HudTheme.amber, filled: true, compact: true) {
                         vm.closeDuplicateExtras()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(PulseTheme.amber)
-                    .controlSize(.mini)
                 }
                 .padding(7)
-                .background(PulseTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+                .background(HudTheme.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.amber.opacity(0.4), lineWidth: 0.7))
             }
 
             if !vm.openBrowserTabs.isEmpty {
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HudTheme.cyan)
                     TextField("Lọc theo tiêu đề, URL hoặc tên trình duyệt...", text: $vm.tabSearchQuery)
                         .textFieldStyle(.plain)
                         .font(.caption)
+                        .foregroundStyle(HudTheme.textPrimary)
                     if !vm.tabSearchQuery.isEmpty {
                         Button {
                             vm.tabSearchQuery = ""
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(HudTheme.textSecondary)
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 4.5)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.vertical, 5)
+                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.cyan.opacity(0.25), lineWidth: 0.7))
             }
 
             let matching = vm.filteredBrowserTabs
@@ -398,37 +366,38 @@ struct BrowserTabsInspectorCard: View {
                      ? "Không đọc được tab nào hoặc trình duyệt (Chrome, Brave, Edge, Arc, Safari) chưa mở tab."
                      : "Không có tab nào khớp từ khoá tìm kiếm.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(HudTheme.textSecondary)
             } else {
                 VStack(spacing: 4) {
                     ForEach(shown) { tab in
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(tab.title.isEmpty ? tab.url : tab.title)
-                                    .font(.caption.weight(.medium))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(HudTheme.textPrimary)
                                     .lineLimit(1)
                                 Text("\(tab.browser) • \(tab.url)")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(HudTheme.textSecondary)
                                     .lineLimit(1)
                             }
                             Spacer()
-                            Button("Đóng") {
+                            HudButton(title: "Đóng", color: HudTheme.crimson, filled: false, compact: true) {
                                 vm.closeSingleBrowserTab(tab)
                             }
-                            .controlSize(.mini)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
-                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
+                        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.cyan.opacity(0.16), lineWidth: 0.6))
                     }
                     if matching.count > 12 {
                         Button {
                             vm.showAllTabs.toggle()
                         } label: {
-                            Text(vm.showAllTabs ? "Thu gọn" : "Xem toàn bộ \(matching.count) tab")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(PulseTheme.cyan)
+                            Text(vm.showAllTabs ? "THU GỌN" : "XEM TOÀN BỘ \(matching.count) TAB")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HudTheme.cyan)
                         }
                         .buttonStyle(.plain)
                         .padding(.top, 2)
@@ -436,6 +405,6 @@ struct BrowserTabsInspectorCard: View {
                 }
             }
         }
-        .telemetryCard(accent: PulseTheme.cyan, cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.cyan, chamfer: 9, padding: 11, showBrackets: true)
     }
 }

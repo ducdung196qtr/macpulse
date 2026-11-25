@@ -36,48 +36,58 @@ private struct MenuBarLabelView: View {
 
 private struct PopoverRootView: View {
     @ObservedObject var vm: AppViewModel
-    @Environment(\.colorScheme) private var systemScheme
     @State private var hoveredTab: AppTab?
     @Namespace private var tabIndicatorNS
 
-    private var effectiveScheme: ColorScheme {
-        vm.appearanceMode == .darkCockpit ? .dark : systemScheme
+    private var isQuantumViolet: Bool {
+        vm.appearanceMode == .system
+    }
+
+    private var primaryAccent: Color {
+        HudTheme.primaryAccent(quantumMode: isQuantumViolet)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerBar
-            Divider().opacity(0.45)
+        ZStack {
+            SciFiBackgroundCanvas(accent: primaryAccent)
 
-            customTabBar
-                .padding(.horizontal, 14)
-                .padding(.top, 9)
-                .padding(.bottom, 7)
+            VStack(spacing: 0) {
+                headerBar
+                neonHairline
 
-            if let notice = vm.actionNotice {
-                actionNoticeBanner(notice)
+                commandDockBar
                     .padding(.horizontal, 14)
+                    .padding(.top, 9)
                     .padding(.bottom, 7)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
 
-            Group {
-                switch vm.selectedTab {
-                case .overview: DashboardView(vm: vm)
-                case .aiPulse: AIPulseView(vm: vm)
-                case .cleaner: CleanerView(vm: vm)
-                case .vietnamese: VietnameseView(vm: vm)
-                case .benchmark: BenchmarkView(vm: vm)
+                if let notice = vm.actionNotice {
+                    actionNoticeBanner(notice)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 7)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider().opacity(0.45)
-            footerBar
+                Group {
+                    switch vm.selectedTab {
+                    case .overview: DashboardView(vm: vm)
+                    case .aiPulse: AIPulseView(vm: vm)
+                    case .cleaner: CleanerView(vm: vm)
+                    case .vietnamese: VietnameseView(vm: vm)
+                    case .benchmark: BenchmarkView(vm: vm)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                neonHairline
+                footerBar
+            }
         }
-        .frame(width: 560, height: 680)
-        .background(PulseTheme.canvasBackground(for: effectiveScheme))
-        .preferredColorScheme(vm.appearanceMode == .darkCockpit ? .dark : nil)
+        .frame(width: 575, height: 690)
+        // Force SwiftUI environment colorScheme inside MenuBarExtra so ScrollView/TextField/Picker
+        // always render dark even when macOS system appearance is Light Mode
+        .environment(\.colorScheme, .dark)
+        .preferredColorScheme(.dark)
+        .foregroundStyle(HudTheme.textPrimary)
         .animation(.easeInOut(duration: 0.18), value: vm.actionNotice)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
@@ -88,40 +98,53 @@ private struct PopoverRootView: View {
         }
     }
 
+    private var neonHairline: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [Color.clear, primaryAccent.opacity(0.45), HudTheme.violet.opacity(0.28), Color.clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(height: 1)
+    }
+
     // MARK: - Smart Action Toast
     private func actionNoticeBanner(_ message: String) -> some View {
         let accent: Color
         let icon: String
         switch vm.actionNoticeKind {
         case .success:
-            accent = PulseTheme.emerald
-            icon = "checkmark.circle.fill"
+            accent = HudTheme.emerald
+            icon = "checkmark.seal.fill"
         case .info:
-            accent = PulseTheme.cyan
+            accent = HudTheme.cyan
             icon = "info.circle.fill"
         case .warning:
-            accent = PulseTheme.amber
+            accent = HudTheme.amber
             icon = "exclamationmark.triangle.fill"
         case .error:
-            accent = PulseTheme.crimson
+            accent = HudTheme.crimson
             icon = "xmark.octagon.fill"
         }
 
         return HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(accent)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12, weight: .bold))
+                .shadow(color: accent.opacity(0.6), radius: 3)
             Text(message)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(.primary)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(HudTheme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button {
                 vm.dismissNotice()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(HudTheme.textSecondary)
                     .frame(width: 18, height: 18)
                     .contentShape(Rectangle())
             }
@@ -130,72 +153,78 @@ private struct PopoverRootView: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(accent.opacity(0.11))
+            ChamferedRect(cut: 6, cornerRadius: 3)
+                .fill(HudTheme.cardBgHi)
+                .overlay(ChamferedRect(cut: 6, cornerRadius: 3).fill(accent.opacity(0.14)))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(accent.opacity(0.32), lineWidth: 0.9)
+            ChamferedRect(cut: 6, cornerRadius: 3)
+                .strokeBorder(accent.opacity(0.55), lineWidth: 0.9)
         )
     }
 
-    // MARK: - Precision Cockpit Header
+    // MARK: - Sci-Fi Mission Control Header
     private var headerBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 11) {
             ArcHealthGauge(
                 score: vm.healthReport?.score ?? 100,
                 color: statusColor,
-                size: 38
+                size: 44
             )
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text("MacPulse")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                    Text("MACPULSE")
+                        .font(.system(size: 14.5, weight: .black, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(HudTheme.textPrimary)
+                        .shadow(color: primaryAccent.opacity(0.45), radius: 4)
+
                     Text("v2.0")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 5)
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 5.5)
                         .padding(.vertical, 1.5)
-                        .background(PulseTheme.cyan.opacity(0.16), in: Capsule())
-                        .foregroundStyle(PulseTheme.cyan)
+                        .background(primaryAccent.opacity(0.18), in: Capsule())
+                        .overlay(Capsule().strokeBorder(primaryAccent.opacity(0.48), lineWidth: 0.7))
+                        .foregroundStyle(primaryAccent)
+
                     Text(vm.hardwareSpecs.compactBadge)
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
+                        .foregroundStyle(HudTheme.textSecondary)
+                        .padding(.horizontal, 6.5)
                         .padding(.vertical, 1.5)
-                        .background(Color.primary.opacity(0.06), in: Capsule())
+                        .background(HudTheme.insetBg, in: Capsule())
+                        .overlay(Capsule().strokeBorder(HudTheme.textMuted.opacity(0.32), lineWidth: 0.7))
                         .lineLimit(1)
                 }
 
                 HStack(spacing: 7) {
                     HStack(spacing: 4) {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 6, height: 6)
+                        LivePulseDot(color: statusColor, isLive: true)
                         Text(vm.healthReport?.statusLabel ?? "Đang phân tích...")
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 10.5, weight: .semibold))
                             .foregroundStyle(statusColor)
                     }
 
                     if let snap = vm.snapshot {
-                        Text("•")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        Text("│")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(HudTheme.textMuted)
                         HStack(spacing: 3) {
                             Image(systemName: thermalIcon(snap.thermalLevel))
-                                .font(.system(size: 9))
+                                .font(.system(size: 9.5))
                             Text(snap.thermalLevel.label)
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
                         }
                         .foregroundStyle(thermalColor(snap.thermalLevel))
 
                         if snap.uptimeSeconds > 60 {
-                            Text("•")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                            Text("Up \(snap.formattedUptime)")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                            Text("│")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(HudTheme.textMuted)
+                            Text("UP \(snap.formattedUptime)")
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(HudTheme.textSecondary)
                         }
                     }
                 }
@@ -203,41 +232,54 @@ private struct PopoverRootView: View {
 
             Spacer(minLength: 4)
 
-            // Appearance quick toggle (Dark Cockpit / System)
+            // HUD Accent Switcher (Cyber Cyan <-> Quantum Violet)
             Button {
-                vm.toggleAppearanceMode()
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    vm.toggleAppearanceMode()
+                }
             } label: {
-                Image(systemName: vm.appearanceMode == .darkCockpit ? "moon.stars.fill" : "circle.lefthalf.filled")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(vm.appearanceMode == .darkCockpit ? PulseTheme.cyan : .secondary)
-                    .frame(width: 26, height: 26)
-                    .background(Color.primary.opacity(0.07), in: Circle())
-                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75))
+                ZStack {
+                    Circle()
+                        .fill(HudTheme.cardBgHi)
+                        .overlay(Circle().strokeBorder(primaryAccent.opacity(0.5), lineWidth: 0.9))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: isQuantumViolet ? "sparkles" : "atom")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(primaryAccent)
+                        .shadow(color: primaryAccent.opacity(0.8), radius: 3)
+                }
             }
             .buttonStyle(.plain)
-            .help(vm.appearanceMode == .darkCockpit ? "Giao diện Dark Cockpit (bấm để theo hệ thống macOS)" : "Giao diện theo macOS (bấm để bật Dark Cockpit)")
+            .help(isQuantumViolet ? "Tông màu: Quantum Violet (bấm để đổi sang Cyber Cyan)" : "Tông màu: Cyber Cyan (bấm để đổi sang Quantum Violet)")
 
-            // Quick VI / EN toggle capsule
+            // Neon VI / EN Hardware Pill
             Button {
                 vm.toggleVietnameseEnabled()
             } label: {
-                let activeColor = vm.imeSettings.isEnabled ? PulseTheme.cyan : Color.gray
-                HStack(spacing: 4) {
+                let activeColor = vm.imeSettings.isEnabled ? HudTheme.cyan : HudTheme.textMuted
+                HStack(spacing: 4.5) {
                     Circle()
                         .fill(activeColor)
                         .frame(width: 6.5, height: 6.5)
-                        .shadow(color: vm.imeSettings.isEnabled ? activeColor.opacity(0.7) : .clear, radius: 2.5)
+                        .shadow(color: vm.imeSettings.isEnabled ? activeColor : .clear, radius: 3.5)
                     Text(vm.imeSettings.isEnabled ? "VI" : "EN")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .font(.system(size: 11, weight: .black, design: .monospaced))
+                        .foregroundStyle(HudTheme.textPrimary)
                     Text(vm.imeSettings.inputMethod == .vni ? "VNI" : (vm.imeSettings.inputMethod == .telex ? "TLX" : "T+V"))
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .opacity(0.8)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(activeColor)
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(activeColor.opacity(0.14), in: Capsule())
-                .overlay(Capsule().strokeBorder(activeColor.opacity(0.38), lineWidth: 0.9))
-                .foregroundStyle(vm.imeSettings.isEnabled ? PulseTheme.cyan : .secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5.5)
+                .background(
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .fill(vm.imeSettings.isEnabled ? activeColor.opacity(0.18) : HudTheme.insetBg)
+                )
+                .overlay(
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .strokeBorder(activeColor.opacity(vm.imeSettings.isEnabled ? 0.78 : 0.35), lineWidth: 0.95)
+                )
+                .shadow(color: vm.imeSettings.isEnabled ? activeColor.opacity(0.28) : .clear, radius: 5)
             }
             .buttonStyle(.plain)
             .help("Bấm hoặc nhấn \(vm.imeSettings.hotkey.displayName) để chuyển Việt / Anh")
@@ -246,80 +288,97 @@ private struct PopoverRootView: View {
         .padding(.vertical, 10)
     }
 
-    // MARK: - Sliding Segmented Navigation Bar
-    private var customTabBar: some View {
-        HStack(spacing: 4) {
+    // MARK: - Sci-Fi Command Navigation Dock
+    private var commandDockBar: some View {
+        HStack(spacing: 5) {
             ForEach(AppTab.allCases) { tab in
-                let isSelected = vm.selectedTab == tab
-                let showDot = dotColor(for: tab)
-                Button {
-                    NSApp.activate(ignoringOtherApps: true)
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                        vm.selectedTab = tab
-                        if tab == .cleaner {
-                            vm.cleanerFocus = .all
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: iconForTab(tab))
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(tab.rawValue)
-                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
-                            .lineLimit(1)
-                        if let dotColor = showDot {
-                            Circle()
-                                .fill(dotColor)
-                                .frame(width: 5.5, height: 5.5)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6.5)
-                    .padding(.horizontal, 4)
-                    .background {
-                        if isSelected {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [PulseTheme.cyan.opacity(0.88), PulseTheme.cobalt.opacity(0.92)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .shadow(color: PulseTheme.cobalt.opacity(0.32), radius: 4, y: 1)
-                                .matchedGeometryEffect(id: "activeTabPill", in: tabIndicatorNS)
-                        } else if hoveredTab == tab {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.primary.opacity(0.06))
-                        }
-                    }
-                    .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.85))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("tab_\(tab.rawValue)")
-                .accessibilityLabel(tab.rawValue)
-                .onHover { hovering in
-                    hoveredTab = hovering ? tab : (hoveredTab == tab ? nil : hoveredTab)
-                }
+                commandDockButton(for: tab)
             }
         }
-        .padding(3.5)
-        .background(PulseTheme.cardFill(for: effectiveScheme), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(PulseTheme.borderColor(for: effectiveScheme), lineWidth: 0.8)
+        .padding(4)
+        .background(
+            ChamferedRect(cut: 8, cornerRadius: 4)
+                .fill(HudTheme.insetBg.opacity(0.95))
         )
+        .overlay(
+            ChamferedRect(cut: 8, cornerRadius: 4)
+                .strokeBorder(primaryAccent.opacity(0.24), lineWidth: 0.85)
+        )
+    }
+
+    private func commandDockButton(for tab: AppTab) -> some View {
+        let isSelected = vm.selectedTab == tab
+        let alertDot = dotColor(for: tab)
+        return Button {
+            NSApp.activate(ignoringOtherApps: true)
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                vm.selectedTab = tab
+                if tab == .cleaner {
+                    vm.cleanerFocus = .all
+                }
+            }
+        } label: {
+            HStack(spacing: 4.5) {
+                Image(systemName: iconForTab(tab))
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(isSelected ? primaryAccent : HudTheme.textSecondary)
+                Text(tab.rawValue)
+                    .font(.system(size: 11, weight: isSelected ? .bold : .medium, design: .rounded))
+                    .foregroundStyle(isSelected ? HudTheme.textPrimary : HudTheme.textSecondary)
+                    .lineLimit(1)
+                if let dot = alertDot {
+                    Circle()
+                        .fill(dot)
+                        .frame(width: 5.5, height: 5.5)
+                        .shadow(color: dot, radius: 2.5)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .padding(.horizontal, 4)
+            .background {
+                if isSelected {
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .fill(
+                            LinearGradient(
+                                colors: [primaryAccent.opacity(0.26), HudTheme.cobalt.opacity(0.18)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .overlay(
+                            ChamferedRect(cut: 6, cornerRadius: 3)
+                                .strokeBorder(primaryAccent.opacity(0.75), lineWidth: 1)
+                        )
+                        .shadow(color: primaryAccent.opacity(0.32), radius: 5)
+                        .matchedGeometryEffect(id: "hudActiveTab", in: tabIndicatorNS)
+                } else if hoveredTab == tab {
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .fill(HudTheme.cardBgHi.opacity(0.85))
+                        .overlay(
+                            ChamferedRect(cut: 6, cornerRadius: 3)
+                                .strokeBorder(primaryAccent.opacity(0.25), lineWidth: 0.7)
+                        )
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("tab_\(tab.rawValue)")
+        .accessibilityLabel(tab.rawValue)
+        .onHover { hovering in
+            hoveredTab = hovering ? tab : (hoveredTab == tab ? nil : hoveredTab)
+        }
     }
 
     private func dotColor(for tab: AppTab) -> Color? {
         switch tab {
         case .vietnamese:
-            return (!vm.isAccessibilityTrusted || !vm.conflictingApps.isEmpty) ? PulseTheme.amber : nil
+            return (!vm.isAccessibilityTrusted || !vm.conflictingApps.isEmpty) ? HudTheme.amber : nil
         case .cleaner:
-            return (vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty) ? PulseTheme.amber : nil
+            return (vm.orphanAutomationGroup != nil || !vm.stuckChromeRenderers.isEmpty) ? HudTheme.amber : nil
         case .aiPulse:
-            if let gpt = vm.aiSnapshot?.chatGPT, gpt.limitReached { return PulseTheme.crimson }
+            if let gpt = vm.aiSnapshot?.chatGPT, gpt.limitReached { return HudTheme.crimson }
             return nil
         default:
             return nil
@@ -336,83 +395,87 @@ private struct PopoverRootView: View {
         }
     }
 
-    // MARK: - Footer Control Strip
+    // MARK: - Sci-Fi Footer Command Bar (100% Explicit High-Contrast Controls)
     private var footerBar: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Circle()
-                    .fill(PulseTheme.emerald)
+                    .fill(HudTheme.emerald)
                     .frame(width: 5.5, height: 5.5)
+                    .shadow(color: HudTheme.emerald, radius: 2.5)
                 Text(vm.lastUpdated, style: .time)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
             }
 
-            Divider().frame(height: 12)
+            Text("│")
+                .font(.system(size: 10))
+                .foregroundStyle(HudTheme.textMuted.opacity(0.5))
 
-            // Launch at Login compact toggle
+            // Launch at Login toggle pill
             Button {
                 vm.setLaunchAtLogin(!vm.launchAtLoginEnabled)
             } label: {
+                let c = vm.launchAtLoginEnabled ? HudTheme.emerald : HudTheme.textSecondary
                 HStack(spacing: 4) {
                     Image(systemName: vm.launchAtLoginEnabled ? "bolt.circle.fill" : "bolt.circle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(vm.launchAtLoginEnabled ? PulseTheme.emerald : .secondary)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(c)
                     Text("Tự mở cùng macOS")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(vm.launchAtLoginEnabled ? .primary : .secondary)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(vm.launchAtLoginEnabled ? HudTheme.textPrimary : HudTheme.textSecondary)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3.5)
                 .background(
-                    (vm.launchAtLoginEnabled ? PulseTheme.emerald.opacity(0.12) : Color.primary.opacity(0.05)),
+                    (vm.launchAtLoginEnabled ? HudTheme.emerald.opacity(0.16) : HudTheme.cardBg),
                     in: Capsule()
                 )
+                .overlay(Capsule().strokeBorder(c.opacity(0.38), lineWidth: 0.7))
             }
             .buttonStyle(.plain)
-            .help("Bật/tắt tự khởi động MacPulse khi đăng nhập macOS")
+            .help("Bật/tắt tự khởi động MacPulse cùng macOS")
 
             // Menu Bar display mode cycler
             Button {
                 vm.cycleMenuBarDisplayMode()
             } label: {
-                HStack(spacing: 3) {
+                HStack(spacing: 3.5) {
                     Image(systemName: "menubar.rectangle")
-                        .font(.system(size: 10))
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(primaryAccent)
                     Text(vm.menuBarDisplayMode.rawValue)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
                 }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.05), in: Capsule())
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3.5)
+                .background(HudTheme.cardBg, in: Capsule())
+                .overlay(Capsule().strokeBorder(primaryAccent.opacity(0.28), lineWidth: 0.7))
             }
             .buttonStyle(.plain)
-            .help("Đổi kiểu hiển thị trên thanh Menu Bar (CPU•RAM / CPU•AI / Siêu gọn)")
+            .help("Đổi kiểu hiển thị trên thanh Menu Bar (CPU•RAM / CPU•AI / Gọn)")
 
             Spacer()
 
-            Button {
+            HudButton(title: "Quét", icon: "arrow.clockwise", color: primaryAccent, filled: false, compact: true) {
                 vm.refreshNow(includeProcesses: true)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .semibold))
             }
-            .controlSize(.small)
-            .help("Làm mới dữ liệu ngay")
 
-            Button("Thoát") { NSApp.terminate(nil) }
-                .controlSize(.small)
+            HudButton(title: "Thoát", icon: "power", color: HudTheme.crimson, filled: false, compact: true) {
+                NSApp.terminate(nil)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+        .background(HudTheme.bgDeep.opacity(0.85))
     }
 
     private var statusColor: Color {
         switch vm.healthReport?.severity ?? .ok {
-        case .ok: return PulseTheme.emerald
-        case .warning: return PulseTheme.amber
-        case .critical: return PulseTheme.crimson
+        case .ok: return HudTheme.emerald
+        case .warning: return HudTheme.amber
+        case .critical: return HudTheme.crimson
         }
     }
 
@@ -426,9 +489,9 @@ private struct PopoverRootView: View {
 
     private func thermalColor(_ level: ThermalLevel) -> Color {
         switch level {
-        case .nominal: return .secondary
-        case .fair: return PulseTheme.amber
-        case .serious, .critical: return PulseTheme.crimson
+        case .nominal: return HudTheme.emerald
+        case .fair: return HudTheme.amber
+        case .serious, .critical: return HudTheme.crimson
         }
     }
 }

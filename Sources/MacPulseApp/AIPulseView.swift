@@ -38,116 +38,111 @@ public struct AIPulseView: View {
         }
     }
 
-    // MARK: - Header Banner
     private var headerBanner: some View {
         HStack(alignment: .center, spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(PulseTheme.antigravityGradient)
-                    .frame(width: 34, height: 34)
+                ChamferedRect(cut: 7, cornerRadius: 3)
+                    .fill(HudTheme.antigravityGradient)
+                    .frame(width: 36, height: 36)
+                    .shadow(color: HudTheme.cyan.opacity(0.45), radius: 6)
                 Image(systemName: "waveform.path.ecg.rectangle.fill")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text("AI Quota Command Center")
-                        .font(.system(size: 13.5, weight: .bold, design: .rounded))
+                    Text("NEURAL QUOTA COMMAND")
+                        .font(.system(size: 12.5, weight: .black, design: .monospaced))
+                        .tracking(0.8)
+                        .foregroundStyle(HudTheme.textPrimary)
                     if vm.isScanningAI {
                         ProgressView().controlSize(.mini)
                     }
                 }
                 Text("Đo trực tiếp phiên 5 giờ, giới hạn tuần & token thực (Antigravity + ChatGPT)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10))
+                    .foregroundStyle(HudTheme.textSecondary)
             }
 
             Spacer()
 
-            Button {
+            HudButton(
+                title: vm.isScanningAI ? "Đang quét" : "Đồng bộ",
+                icon: "arrow.clockwise",
+                color: HudTheme.cyan,
+                filled: true,
+                compact: true,
+                disabled: vm.isScanningAI
+            ) {
                 vm.refreshAIQuota()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .rotationEffect(.degrees(vm.isScanningAI ? 360 : 0))
-                        .animation(vm.isScanningAI ? .linear(duration: 0.9).repeatForever(autoreverses: false) : .default, value: vm.isScanningAI)
-                    Text("Đồng bộ")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(PulseTheme.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(PulseTheme.cyan.opacity(0.32), lineWidth: 0.8))
-                .foregroundStyle(PulseTheme.cyan)
             }
-            .buttonStyle(.plain)
-            .disabled(vm.isScanningAI)
         }
-        .telemetryCard(accent: PulseTheme.cobalt, cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.cyan, chamfer: 9, padding: 11, showBrackets: true)
     }
 
     private var loadingPlaceholder: some View {
         VStack(spacing: 10) {
             ProgressView().controlSize(.regular)
-            Text("Đang đồng bộ quota trực tiếp từ daemon & API...")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text("CONNECTING TO NEURAL DAEMONS...")
+                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(HudTheme.cyan)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 44)
-        .telemetryCard(cornerRadius: 12, padding: 14)
+        .hudCard(accent: HudTheme.cyan, chamfer: 10, padding: 14)
     }
 
     private var efficiencyFootnote: some View {
         HStack(spacing: 7) {
             Image(systemName: "bolt.shield.fill")
                 .font(.system(size: 11))
-                .foregroundStyle(PulseTheme.emerald)
-            Text("Quét song song từ Antigravity daemon nội bộ, ChatGPT /wham/usage & SQLite cục bộ. Không dùng số liệu giả khi offline.")
+                .foregroundStyle(HudTheme.emerald)
+            Text("Quét song song từ Antigravity daemon nội bộ, ChatGPT /wham/usage & SQLite cục bộ. 0% số liệu giả khi offline.")
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HudTheme.textMuted)
             Spacer()
         }
         .padding(.horizontal, 4)
     }
 }
 
-// MARK: - Google Antigravity Command Card
+// MARK: - Google Antigravity Hologram Card
 private struct AntigravityCommandCard: View {
     let metrics: AIProviderMetrics
     let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            // Top Identity Row
             HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(PulseTheme.antigravityGradient)
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .fill(HudTheme.antigravityGradient)
                         .frame(width: 34, height: 34)
+                        .shadow(color: HudTheme.cobalt.opacity(0.55), radius: 5)
                     Image(systemName: "brain.head.profile")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(metrics.name)
-                            .font(.system(size: 13.5, weight: .bold))
+                        Text(metrics.name.uppercased())
+                            .font(.system(size: 12.5, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.textPrimary)
                         if let plan = metrics.planTier {
                             Text(plan)
-                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(PulseTheme.cobalt.opacity(0.18), in: Capsule())
-                                .foregroundStyle(PulseTheme.cobalt)
+                                .background(HudTheme.cobalt.opacity(0.24), in: Capsule())
+                                .overlay(Capsule().strokeBorder(HudTheme.cobalt.opacity(0.6), lineWidth: 0.7))
+                                .foregroundStyle(HudTheme.cyan)
                         }
                     }
                     Text(metrics.userAccount ?? metrics.statusMessage)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
                         .lineLimit(1)
                 }
 
@@ -156,9 +151,10 @@ private struct AntigravityCommandCard: View {
                 SourceStateBadge(state: metrics.sourceState, syncTime: metrics.lastSyncTime)
             }
 
-            Divider().opacity(0.45)
+            Rectangle()
+                .fill(LinearGradient(colors: [HudTheme.cobalt.opacity(0.5), .clear], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 0.8)
 
-            // Multi-Pool Quotas (Gemini 4/Flash & Claude 4.6/GPT-OSS)
             if !metrics.quotaPools.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(metrics.quotaPools) { pool in
@@ -166,7 +162,7 @@ private struct AntigravityCommandCard: View {
                             title: pool.label,
                             subtitle: pool.modelSummary,
                             quota: pool.quota,
-                            accent: pool.id.contains("gemini") ? PulseTheme.cobalt : PulseTheme.violet,
+                            accent: pool.id.contains("gemini") ? HudTheme.cyan : HudTheme.violet,
                             now: now
                         )
                     }
@@ -176,106 +172,106 @@ private struct AntigravityCommandCard: View {
                     title: q5.name,
                     subtitle: metrics.activeModel ?? "Gemini",
                     quota: q5,
-                    accent: PulseTheme.cobalt,
+                    accent: HudTheme.cyan,
                     now: now
                 )
             } else {
                 OfflineQuotaNotice(message: metrics.statusMessage)
             }
 
-            // Credits Pill Row (if reported by daemon)
             if metrics.promptCreditsAvailable != nil || metrics.flowCreditsAvailable != nil {
                 HStack(spacing: 8) {
                     if let pCred = metrics.promptCreditsAvailable {
-                        creditPill(label: "Prompt Credits", value: "\(pCred)", color: PulseTheme.cyan)
+                        creditPill(label: "PROMPT CREDITS", value: "\(pCred)", color: HudTheme.cyan)
                     }
                     if let fCred = metrics.flowCreditsAvailable {
-                        creditPill(label: "Flow Credits", value: "\(fCred)", color: PulseTheme.violet)
+                        creditPill(label: "FLOW CREDITS", value: "\(fCred)", color: HudTheme.violet)
                     }
                     Spacer()
                 }
             }
 
-            // Real Timezone-Accurate Token Matrix (5H / Today / 7D)
             TokenStatsMatrix(
                 tokens5H: metrics.formattedTokensLast5Hours,
                 tokensToday: metrics.formattedTokensToday,
                 tokens7D: metrics.formattedTokensLast7Days,
                 turnsToday: metrics.turnsOrPromptsToday,
                 sessionsToday: metrics.activeSessionsToday,
-                accent: PulseTheme.cobalt
+                accent: HudTheme.cyan
             )
         }
-        .telemetryCard(accent: PulseTheme.cobalt, cornerRadius: 12, padding: 13)
+        .hudCard(accent: HudTheme.cobalt, chamfer: 11, padding: 13, showBrackets: true)
     }
 
     private func creditPill(label: String, value: String, color: Color) -> some View {
         HStack(spacing: 5) {
             Text(label)
-                .font(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(HudTheme.textSecondary)
             Text(value)
-                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                .font(.system(size: 10.5, weight: .black, design: .monospaced))
                 .foregroundStyle(color)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3.5)
-        .background(color.opacity(0.11), in: Capsule())
-        .overlay(Capsule().strokeBorder(color.opacity(0.25), lineWidth: 0.7))
+        .background(HudTheme.insetBg, in: Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(0.45), lineWidth: 0.7))
     }
 }
 
-// MARK: - ChatGPT Command Card
+// MARK: - ChatGPT Hologram Card
 private struct ChatGPTCommandCard: View {
     let metrics: AIProviderMetrics
     let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            // Top Identity Row
             HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(PulseTheme.chatGPTGradient)
+                    ChamferedRect(cut: 6, cornerRadius: 3)
+                        .fill(HudTheme.chatGPTGradient)
                         .frame(width: 34, height: 34)
+                        .shadow(color: HudTheme.emerald.opacity(0.55), radius: 5)
                     Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14.5, weight: .bold))
                         .foregroundStyle(.white)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(metrics.name)
-                            .font(.system(size: 13.5, weight: .bold))
+                        Text(metrics.name.uppercased())
+                            .font(.system(size: 12.5, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.textPrimary)
                         if let plan = metrics.planTier {
                             Text(plan)
-                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(PulseTheme.emerald.opacity(0.18), in: Capsule())
-                                .foregroundStyle(PulseTheme.emerald)
+                                .background(HudTheme.emerald.opacity(0.22), in: Capsule())
+                                .overlay(Capsule().strokeBorder(HudTheme.emerald.opacity(0.55), lineWidth: 0.7))
+                                .foregroundStyle(HudTheme.emerald)
                         }
                         if metrics.limitReached {
-                            Text("CHẠM TRẦN")
-                                .font(.system(size: 8.5, weight: .bold))
-                                .padding(.horizontal, 5)
+                            Text("LIMIT REACHED")
+                                .font(.system(size: 8, weight: .black, design: .monospaced))
+                                .padding(.horizontal, 5.5)
                                 .padding(.vertical, 1.5)
-                                .background(PulseTheme.crimson.opacity(0.2), in: Capsule())
-                                .foregroundStyle(PulseTheme.crimson)
+                                .background(HudTheme.crimson.opacity(0.24), in: Capsule())
+                                .foregroundStyle(HudTheme.crimson)
                         }
                     }
                     HStack(spacing: 5) {
                         Text(metrics.userAccount ?? metrics.statusMessage)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(HudTheme.textSecondary)
                             .lineLimit(1)
                         if let model = metrics.activeModel {
-                            Text("•")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                            Text("│")
+                                .font(.system(size: 9))
+                                .foregroundStyle(HudTheme.textMuted)
                             Text(model)
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(PulseTheme.emerald)
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HudTheme.emerald)
                                 .lineLimit(1)
                         }
                     }
@@ -286,9 +282,10 @@ private struct ChatGPTCommandCard: View {
                 SourceStateBadge(state: metrics.sourceState, syncTime: metrics.lastSyncTime)
             }
 
-            Divider().opacity(0.45)
+            Rectangle()
+                .fill(LinearGradient(colors: [HudTheme.emerald.opacity(0.5), .clear], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 0.8)
 
-            // 5-Hour & Weekly Windows
             if metrics.fiveHourQuota != nil || metrics.weeklyQuota != nil {
                 VStack(spacing: 8) {
                     if let q5 = metrics.fiveHourQuota {
@@ -296,7 +293,7 @@ private struct ChatGPTCommandCard: View {
                             title: "Phiên 5 Giờ (Burst Window)",
                             subtitle: "Hạn mức ngắn hạn tự hồi sau 5 giờ",
                             quota: q5,
-                            accent: PulseTheme.emerald,
+                            accent: HudTheme.emerald,
                             now: now
                         )
                     }
@@ -306,7 +303,7 @@ private struct ChatGPTCommandCard: View {
                             title: "Giới Hạn Tuần (7-Day Cap)",
                             subtitle: "Tổng hạn mức sử dụng chu kỳ tuần",
                             quota: q7,
-                            accent: PulseTheme.teal,
+                            accent: HudTheme.teal,
                             now: now
                         )
                     }
@@ -315,46 +312,45 @@ private struct ChatGPTCommandCard: View {
                 OfflineQuotaNotice(message: metrics.statusMessage)
             }
 
-            // Extra metadata (reset credits if available)
             if let rc = metrics.resetCreditsAvailable, rc > 0 {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(PulseTheme.emerald)
+                        .foregroundStyle(HudTheme.emerald)
                     Text("Lượt reset hạn mức dự phòng sẵn có: \(rc)")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
                     Spacer()
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(PulseTheme.emerald.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.vertical, 4.5)
+                .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.emerald.opacity(0.32), lineWidth: 0.7))
             }
 
-            // Real Codex SQLite Token Matrix
             TokenStatsMatrix(
                 tokens5H: metrics.formattedTokensLast5Hours,
                 tokensToday: metrics.formattedTokensToday,
                 tokens7D: metrics.formattedTokensLast7Days,
                 turnsToday: 0,
                 sessionsToday: metrics.activeSessionsToday,
-                accent: PulseTheme.emerald
+                accent: HudTheme.emerald
             )
         }
-        .telemetryCard(accent: PulseTheme.emerald, cornerRadius: 12, padding: 13)
+        .hudCard(accent: HudTheme.emerald, chamfer: 11, padding: 13, showBrackets: true)
     }
 }
 
-// MARK: - Shared Precision Subcomponents
+// MARK: - Shared Sci-Fi Subcomponents
 private struct SourceStateBadge: View {
     let state: AIQuotaSourceState
     let syncTime: Date
 
     private var color: Color {
         switch state {
-        case .live: return PulseTheme.emerald
-        case .cached: return PulseTheme.amber
-        case .offline: return .secondary
+        case .live: return HudTheme.emerald
+        case .cached: return HudTheme.amber
+        case .offline: return HudTheme.textMuted
         }
     }
 
@@ -363,16 +359,17 @@ private struct SourceStateBadge: View {
             HStack(spacing: 4) {
                 LivePulseDot(color: color, isLive: state == .live)
                 Text(state.badgeLabel)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 8.5, weight: .black, design: .monospaced))
                     .foregroundStyle(color)
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 6.5)
             .padding(.vertical, 2)
-            .background(color.opacity(0.13), in: Capsule())
+            .background(color.opacity(0.15), in: Capsule())
+            .overlay(Capsule().strokeBorder(color.opacity(0.45), lineWidth: 0.7))
 
             Text(syncTime, style: .time)
                 .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(HudTheme.textMuted)
         }
     }
 }
@@ -385,8 +382,8 @@ private struct QuotaPoolTelemetryRow: View {
     let now: Date
 
     private var healthColor: Color {
-        if quota.usedPercent >= 90 { return PulseTheme.crimson }
-        if quota.usedPercent >= 70 { return PulseTheme.amber }
+        if quota.usedPercent >= 90 { return HudTheme.crimson }
+        if quota.usedPercent >= 70 { return HudTheme.amber }
         return accent
     }
 
@@ -395,60 +392,59 @@ private struct QuotaPoolTelemetryRow: View {
             QuotaRingView(
                 remainingPercent: quota.remainingPercent,
                 color: healthColor,
-                size: 44,
+                size: 48,
                 lineWidth: 4.2
             )
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 5.5) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(title)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundStyle(HudTheme.textPrimary)
                         Text(subtitle)
                             .font(.system(size: 9.5))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(HudTheme.textSecondary)
                             .lineLimit(1)
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("Còn \(quota.formattedRemainingPercent)")
-                            .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                        Text("CÒN \(quota.formattedRemainingPercent)")
+                            .font(.system(size: 11, weight: .black, design: .monospaced))
                             .foregroundStyle(healthColor)
-                        Text("Đã dùng \(quota.formattedUsedPercent)")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        Text("ĐÃ DÙNG \(quota.formattedUsedPercent)")
+                            .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(HudTheme.textMuted)
                     }
                 }
 
                 TickProgressBar(
                     ratio: quota.remainingPercent / 100.0,
                     color: healthColor,
-                    height: 6,
-                    showTicks: true
+                    height: 6.5,
+                    showTicks: true,
+                    segments: 22
                 )
 
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: "timer")
                         .font(.system(size: 9.5))
                         .foregroundStyle(healthColor)
-                    Text("Làm mới sau: \(quota.formattedResetCountdown(relativeTo: now))")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    Text("RESET SAU: \(quota.formattedResetCountdown(relativeTo: now).uppercased())")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
                     Spacer()
                     if let resetAt = quota.resetAt {
                         Text(resetAt, style: .time)
                             .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(HudTheme.textMuted)
                     }
                 }
             }
         }
-        .padding(9)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(healthColor.opacity(0.18), lineWidth: 0.7)
-        )
+        .padding(9.5)
+        .background(HudTheme.insetBg.opacity(0.9), in: ChamferedRect(cut: 7, cornerRadius: 3))
+        .overlay(ChamferedRect(cut: 7, cornerRadius: 3).strokeBorder(healthColor.opacity(0.32), lineWidth: 0.8))
     }
 }
 
@@ -471,23 +467,24 @@ private struct TokenStatsMatrix: View {
     private func metricCell(label: String, value: String, sub: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                 .tracking(0.5)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HudTheme.textMuted)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                    .foregroundStyle(HudTheme.textPrimary)
                 Text(sub)
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(accent.opacity(0.85))
                     .lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 6.5)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(accent.opacity(0.18), lineWidth: 0.65))
     }
 }
 
@@ -498,14 +495,15 @@ private struct OfflineQuotaNotice: View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.slash")
                 .font(.system(size: 13))
-                .foregroundStyle(PulseTheme.amber)
+                .foregroundStyle(HudTheme.amber)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HudTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
         .padding(10)
-        .background(PulseTheme.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .background(HudTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.amber.opacity(0.35), lineWidth: 0.7))
     }
 }

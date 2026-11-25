@@ -29,55 +29,57 @@ struct VietnameseView: View {
     @ViewBuilder
     private var engineStatusCockpit: some View {
         let ready = vm.isAccessibilityTrusted && vm.tapRuntimeState == .running
-        let accent: Color = ready ? PulseTheme.emerald : PulseTheme.amber
+        let accent: Color = ready ? HudTheme.emerald : HudTheme.amber
 
         HStack(alignment: .center, spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(accent.opacity(0.16))
+                ChamferedRect(cut: 6, cornerRadius: 3)
+                    .fill(accent.opacity(0.20))
+                    .overlay(ChamferedRect(cut: 6, cornerRadius: 3).strokeBorder(accent.opacity(0.6), lineWidth: 0.8))
                     .frame(width: 34, height: 34)
                 Image(systemName: ready ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(accent)
+                    .shadow(color: accent.opacity(0.6), radius: 3)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(ready ? "Bộ gõ Tiếng Việt EVKey Engine" : "Cần cấp quyền Trợ năng (Accessibility)")
-                        .font(.system(size: 13, weight: .bold))
-                    Text(ready ? "ACTIVE" : "WAITING")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    Text("EVKEY NEURAL ENGINE")
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                        .foregroundStyle(HudTheme.textPrimary)
+                    Text(ready ? "ONLINE" : "WAITING")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
                         .padding(.horizontal, 5.5)
                         .padding(.vertical, 1.5)
-                        .background(accent.opacity(0.18), in: Capsule())
+                        .background(accent.opacity(0.20), in: Capsule())
+                        .overlay(Capsule().strokeBorder(accent.opacity(0.5), lineWidth: 0.6))
                         .foregroundStyle(accent)
                 }
                 Text(vm.imeStatusSummary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
                     .lineLimit(2)
             }
 
             Spacer()
 
             if !vm.isAccessibilityTrusted {
-                Button("Cấp quyền") {
+                HudButton(title: "Cấp quyền", icon: "lock.open.fill", color: HudTheme.amber, filled: true, compact: true) {
                     vm.requestAccessibilityPermission()
                     vm.openAccessibilitySettings()
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(PulseTheme.amber)
-                .controlSize(.small)
             } else if vm.isFrontmostAppBypassed && !vm.frontmostAppName.isEmpty {
-                Text("Bypass: \(vm.frontmostAppName)")
-                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                Text("BYPASS: \(vm.frontmostAppName.uppercased())")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .background(PulseTheme.cyan.opacity(0.14), in: Capsule())
-                    .foregroundStyle(PulseTheme.cyan)
+                    .background(HudTheme.cyan.opacity(0.16), in: Capsule())
+                    .overlay(Capsule().strokeBorder(HudTheme.cyan.opacity(0.45), lineWidth: 0.7))
+                    .foregroundStyle(HudTheme.cyan)
             }
         }
-        .telemetryCard(accent: accent, cornerRadius: 11, padding: 11)
+        .hudCard(accent: accent, chamfer: 9, padding: 11, showBrackets: true)
     }
 
     @ViewBuilder
@@ -85,23 +87,21 @@ struct VietnameseView: View {
         if !vm.conflictingApps.isEmpty {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "exclamationmark.octagon.fill")
-                    .foregroundStyle(PulseTheme.crimson)
+                    .foregroundStyle(HudTheme.crimson)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Phát hiện bộ gõ khác đang chạy song song")
                         .font(.caption.weight(.bold))
+                        .foregroundStyle(HudTheme.textPrimary)
                     Text("\(vm.conflictingApps.map(\.name).joined(separator: ", ")) đang hoạt động. Tắt để tránh gõ đúp dấu.")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HudTheme.textSecondary)
                 }
                 Spacer()
-                Button("Tắt ngay") {
+                HudButton(title: "Tắt ngay", color: HudTheme.crimson, filled: true, compact: true) {
                     vm.terminateConflictingInputApps()
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(PulseTheme.crimson)
-                .controlSize(.small)
             }
-            .telemetryCard(accent: PulseTheme.crimson, cornerRadius: 10, padding: 10)
+            .hudCard(accent: HudTheme.crimson, chamfer: 8, padding: 10)
         }
     }
 
@@ -111,67 +111,67 @@ struct VietnameseView: View {
             HStack(alignment: .center, spacing: 9) {
                 Image(systemName: "keyboard.badge.exclamationmark")
                     .font(.system(size: 14))
-                    .foregroundStyle(PulseTheme.cyan)
+                    .foregroundStyle(HudTheme.cyan)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("macOS đang bật nguồn gõ Tiếng Việt (\(vm.systemInputSourceID))")
-                        .font(.caption.weight(.semibold))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HudTheme.textPrimary)
                     Text("Chuyển macOS về ABC / U.S. để MacPulse bắt phím chính xác 100%.")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HudTheme.textSecondary)
                 }
                 Spacer()
-                Button("Chuyển về ABC") {
+                HudButton(title: "Chuyển ABC", color: HudTheme.cyan, filled: true, compact: true) {
                     vm.switchSystemInputSourceToABC()
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(PulseTheme.cyan)
-                .controlSize(.small)
             }
-            .telemetryCard(accent: PulseTheme.cyan, cornerRadius: 10, padding: 10)
+            .hudCard(accent: HudTheme.cyan, chamfer: 8, padding: 10)
         }
     }
 
-    // MARK: - Mode & Hotkey Grid (2 Balanced Rows)
+    // MARK: - Mode & Hotkey Matrix
     private var modeAndHotkeyCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Toggle(isOn: Binding(
+            HudToggleRow(
+                title: "Bật gõ Tiếng Việt cấp hệ thống",
+                subtitle: "CGEventTap thuần Swift • Pacing chống lỗi Chrome/Electron • 0 thư viện ngoài",
+                isOn: Binding(
                     get: { vm.imeSettings.isEnabled },
                     set: { val in
                         if val != vm.imeSettings.isEnabled { vm.toggleVietnameseEnabled() }
                     }
-                )) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Bật gõ Tiếng Việt cấp hệ thống")
-                            .font(.system(size: 12.5, weight: .bold))
-                        Text("CGEventTap thuần Swift • Pacing chống lỗi Chrome/Electron • 0 thư viện ngoài")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.switch)
-            }
+                ),
+                accent: HudTheme.cyan
+            )
 
-            Divider().opacity(0.45)
+            Rectangle()
+                .fill(HudTheme.cyan.opacity(0.22))
+                .frame(height: 0.75)
 
             HStack {
-                Text("Kiểu gõ")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Text("KIỂU GÕ")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
                 Spacer()
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
                     ForEach(VietnameseInputMethod.allCases) { method in
                         let selected = vm.imeSettings.inputMethod == method
                         Button {
                             vm.imeSettings.inputMethod = method
                         } label: {
                             Text(method.displayName)
-                                .font(.system(size: 11, weight: selected ? .bold : .medium))
+                                .font(.system(size: 10.5, weight: selected ? .bold : .medium, design: .monospaced))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(selected ? PulseTheme.cobalt : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6.5))
-                                .foregroundStyle(selected ? Color.white : Color.primary)
-                                .contentShape(Rectangle())
+                                .background(
+                                    ChamferedRect(cut: 5, cornerRadius: 2)
+                                        .fill(selected ? HudTheme.cobalt.opacity(0.32) : HudTheme.insetBg)
+                                )
+                                .overlay(
+                                    ChamferedRect(cut: 5, cornerRadius: 2)
+                                        .strokeBorder(selected ? HudTheme.cyan.opacity(0.85) : HudTheme.textMuted.opacity(0.28), lineWidth: 0.85)
+                                )
+                                .foregroundStyle(selected ? HudTheme.textPrimary : HudTheme.textSecondary)
                         }
                         .buttonStyle(.plain)
                     }
@@ -179,9 +179,9 @@ struct VietnameseView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Phím tắt chuyển Việt / Anh")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Text("PHÍM TẮT CHUYỂN VIỆT / ANH")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(HudTheme.textSecondary)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                     ForEach(VietnameseHotkey.allCases) { hk in
                         let selected = vm.imeSettings.hotkey == hk
@@ -190,21 +190,24 @@ struct VietnameseView: View {
                         } label: {
                             HStack(spacing: 5) {
                                 Text(hotkeySymbols(hk))
-                                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                                    .opacity(0.9)
+                                    .font(.system(size: 10.5, weight: .black, design: .monospaced))
+                                    .foregroundStyle(selected ? HudTheme.cyan : HudTheme.textMuted)
                                 Text(hk.displayName)
-                                    .font(.system(size: 11, weight: selected ? .bold : .medium))
+                                    .font(.system(size: 10.5, weight: selected ? .bold : .medium))
+                                    .foregroundStyle(selected ? HudTheme.textPrimary : HudTheme.textSecondary)
                                     .lineLimit(1)
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
                             .padding(.horizontal, 6)
-                            .background(selected ? PulseTheme.cyan.opacity(0.22) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7)
-                                    .strokeBorder(selected ? PulseTheme.cyan.opacity(0.6) : Color.primary.opacity(0.08), lineWidth: 0.9)
+                            .background(
+                                ChamferedRect(cut: 5, cornerRadius: 2)
+                                    .fill(selected ? HudTheme.cyan.opacity(0.20) : HudTheme.insetBg)
                             )
-                            .foregroundStyle(selected ? PulseTheme.cyan : Color.primary)
+                            .overlay(
+                                ChamferedRect(cut: 5, cornerRadius: 2)
+                                    .strokeBorder(selected ? HudTheme.cyan.opacity(0.8) : HudTheme.textMuted.opacity(0.25), lineWidth: 0.85)
+                            )
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -212,7 +215,7 @@ struct VietnameseView: View {
                 }
             }
         }
-        .telemetryCard(cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.cyan.opacity(0.55), chamfer: 9, padding: 11)
     }
 
     private func hotkeySymbols(_ hk: VietnameseHotkey) -> String {
@@ -230,33 +233,28 @@ struct VietnameseView: View {
         VStack(alignment: .leading, spacing: 9) {
             SectionEyebrow(
                 icon: "server.rack",
-                title: "Bảo vệ gõ trên VPS, Windows App & Terminal",
-                color: PulseTheme.cyan
+                title: "Lá chắn VPS, Windows App & Terminal",
+                color: HudTheme.cyan
             )
 
-            VStack(alignment: .leading, spacing: 7) {
-                Toggle(isOn: $vm.imeSettings.autoBypassVPSAndRemote) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Tự động bỏ qua tiếng Việt trên Windows App / Remote Desktop / VPS")
-                            .font(.caption.weight(.semibold))
-                        Text("Pass-through 0ms trễ phím cho Windows App, RDC, AnyDesk, RustDesk, TeamViewer, VNC, Termius, Parallels...")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                HudToggleRow(
+                    title: "Tự động bỏ qua tiếng Việt trên Windows App / Remote Desktop / VPS",
+                    subtitle: "Pass-through 0ms trễ phím cho Windows App, RDC, AnyDesk, RustDesk, TeamViewer, VNC, Termius, Parallels...",
+                    isOn: $vm.imeSettings.autoBypassVPSAndRemote,
+                    accent: HudTheme.cyan
+                )
 
-                Toggle(isOn: $vm.imeSettings.autoBypassTerminal) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Tự động dùng Tiếng Anh trong Terminal / iTerm2 / Warp")
-                            .font(.caption.weight(.semibold))
-                        Text("Tránh gõ nhầm dấu khi gõ lệnh SSH, vim, docker. Vẫn bật lại tiếng Việt thủ công khi cần.")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                HudToggleRow(
+                    title: "Tự động dùng Tiếng Anh trong Terminal / iTerm2 / Warp",
+                    subtitle: "Tránh gõ nhầm dấu khi gõ lệnh SSH, vim, docker. Vẫn bật lại tiếng Việt thủ công khi cần.",
+                    isOn: $vm.imeSettings.autoBypassTerminal,
+                    accent: HudTheme.cyan
+                )
             }
-            .padding(8)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+            .padding(9)
+            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(HudTheme.cyan.opacity(0.18), lineWidth: 0.7))
 
             let frontBid = vm.frontmostBundleID
             let frontName = vm.frontmostAppName.isEmpty ? frontBid : vm.frontmostAppName
@@ -264,45 +262,51 @@ struct VietnameseView: View {
                 let isExcluded = vm.imeSettings.excludedBundleIDs.contains(frontBid)
                 HStack(spacing: 8) {
                     Image(systemName: isExcluded ? "checkmark.circle.fill" : "app.dashed")
-                        .foregroundStyle(isExcluded ? PulseTheme.emerald : .secondary)
+                        .foregroundStyle(isExcluded ? HudTheme.emerald : HudTheme.textSecondary)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("App vừa dùng: \(frontName)")
-                            .font(.caption.weight(.semibold))
-                        Text(isExcluded ? "Đang loại trừ — luôn gõ Tiếng Anh thuần" : "Thêm vào danh sách loại trừ nếu không muốn gõ tiếng Việt trên app này")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(HudTheme.textPrimary)
+                        Text(isExcluded ? "Đang loại trừ — luôn gõ Tiếng Anh thuần" : "Thêm vào danh sách loại trừ nếu không muốn gõ tiếng Việt")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(HudTheme.textSecondary)
                     }
                     Spacer()
-                    Button(isExcluded ? "Bỏ loại trừ" : "Loại trừ app này") {
+                    HudButton(
+                        title: isExcluded ? "Bỏ loại trừ" : "Loại trừ app",
+                        color: isExcluded ? HudTheme.emerald : HudTheme.cyan,
+                        filled: false,
+                        compact: true
+                    ) {
                         if isExcluded {
                             vm.removeAppFromExcluded(frontBid)
                         } else {
                             vm.addAppToExcluded(frontBid)
                         }
                     }
-                    .controlSize(.small)
-                    .buttonStyle(.bordered)
                 }
                 .padding(8)
-                .background((isExcluded ? PulseTheme.emerald.opacity(0.09) : Color.primary.opacity(0.03)), in: RoundedRectangle(cornerRadius: 7))
+                .background(isExcluded ? HudTheme.emerald.opacity(0.10) : HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder((isExcluded ? HudTheme.emerald : HudTheme.textMuted).opacity(0.30), lineWidth: 0.7))
             }
 
             if !vm.imeSettings.excludedBundleIDs.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("App đã loại trừ thủ công (\(vm.imeSettings.excludedBundleIDs.count)):")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
+                    Text("APP LOẠI TRỪ THỦ CÔNG (\(vm.imeSettings.excludedBundleIDs.count))")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(HudTheme.textMuted)
 
                     ForEach(vm.imeSettings.excludedBundleIDs, id: \.self) { bid in
                         HStack {
                             Text(bid)
                                 .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(HudTheme.textPrimary)
                             Spacer()
                             Button {
                                 vm.removeAppFromExcluded(bid)
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(HudTheme.textSecondary)
                             }
                             .buttonStyle(.plain)
                         }
@@ -312,88 +316,96 @@ struct VietnameseView: View {
                 .padding(.horizontal, 4)
             }
         }
-        .telemetryCard(accent: PulseTheme.cyan, cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.cyan, chamfer: 9, padding: 11, showBrackets: true)
     }
 
     // MARK: - Advanced Options
     private var optionsCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            SectionEyebrow(icon: "slider.horizontal.3", title: "Tuỳ chọn bộ gõ chuẩn EVKey", color: PulseTheme.cobalt)
+        VStack(alignment: .leading, spacing: 8) {
+            SectionEyebrow(icon: "slider.horizontal.3", title: "Tuỳ chọn bộ gõ chuẩn EVKey", color: HudTheme.cobalt)
 
-            Group {
-                Toggle("Tự động khôi phục từ tiếng Anh (reset, test, pause, post, code...)", isOn: $vm.imeSettings.smartEnglishRestore)
-                Toggle("Kiểm tra chính tả & bảo vệ từ tiếng Anh / URL", isOn: $vm.imeSettings.spellCheckEnabled)
-                Toggle("Vá thanh địa chỉ & gợi ý Chrome / Safari / Spotlight", isOn: $vm.imeSettings.fixChromiumAutocomplete)
-                Toggle("Đặt dấu kiểu mới (hoà, thuý, uỷ)", isOn: $vm.imeSettings.modernOrthography)
-                Toggle("Đặt dấu tự do (toans → toán, vuwaf → vừa)", isOn: $vm.imeSettings.freeMark)
-                Toggle("Nhớ Việt / Anh theo từng ứng dụng (Smart Switch)", isOn: $vm.imeSettings.smartSwitchPerApp)
-                Toggle("Phím Esc khôi phục từ gốc chưa dấu", isOn: $vm.imeSettings.restoreOnEscape)
-                Toggle("Gõ ngoặc [ ] thành ơ, ư (u[ → ươ, gõ đúp ra ngoặc)", isOn: $vm.imeSettings.bracketShortcuts)
-                Toggle("Gõ W đứng đầu thành Ư (tắt để gõ www thoải mái)", isOn: $vm.imeSettings.standaloneWAsU)
-                Toggle("Gõ nhanh phụ âm đầu (Quick Telex: cc=ch, kk=kh, nn=ng...)", isOn: $vm.imeSettings.quickTelex)
-                Toggle("Dùng phím Caps Lock để chuyển Việt / Anh", isOn: $vm.imeSettings.useCapsLockToSwitch)
-                Toggle("Tự động viết hoa đầu câu", isOn: $vm.imeSettings.autoCapitalize)
-                Toggle("Âm báo nhẹ khi bấm chuyển Việt / Anh", isOn: $vm.imeSettings.soundOnSwitch)
+            VStack(spacing: 7) {
+                HudToggleRow(title: "Tự động khôi phục từ tiếng Anh (reset, test, pause, post, code...)", isOn: $vm.imeSettings.smartEnglishRestore, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Kiểm tra chính tả & bảo vệ từ tiếng Anh / URL", isOn: $vm.imeSettings.spellCheckEnabled, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Vá thanh địa chỉ & gợi ý Chrome / Safari / Spotlight", isOn: $vm.imeSettings.fixChromiumAutocomplete, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Đặt dấu kiểu mới (hoà, thuý, uỷ)", isOn: $vm.imeSettings.modernOrthography, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Đặt dấu tự do (toans → toán, vuwaf → vừa)", isOn: $vm.imeSettings.freeMark, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Nhớ Việt / Anh theo từng ứng dụng (Smart Switch)", isOn: $vm.imeSettings.smartSwitchPerApp, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Phím Esc khôi phục từ gốc chưa dấu", isOn: $vm.imeSettings.restoreOnEscape, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Gõ ngoặc [ ] thành ơ, ư (u[ → ươ, gõ đúp ra ngoặc)", isOn: $vm.imeSettings.bracketShortcuts, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Gõ W đứng đầu thành Ư (tắt để gõ www thoải mái)", isOn: $vm.imeSettings.standaloneWAsU, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Gõ nhanh phụ âm đầu (Quick Telex: cc=ch, kk=kh, nn=ng...)", isOn: $vm.imeSettings.quickTelex, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Dùng phím Caps Lock để chuyển Việt / Anh", isOn: $vm.imeSettings.useCapsLockToSwitch, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Tự động viết hoa đầu câu", isOn: $vm.imeSettings.autoCapitalize, accent: HudTheme.cobalt)
+                HudToggleRow(title: "Âm báo nhẹ khi bấm chuyển Việt / Anh", isOn: $vm.imeSettings.soundOnSwitch, accent: HudTheme.cobalt)
             }
-            .font(.system(size: 11.5))
 
             if vm.imeSettings.smartSwitchPerApp {
                 HStack {
                     Text("Đã ghi nhớ trạng thái cho \(vm.perAppCount) ứng dụng")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
                     Spacer()
                     if vm.perAppCount > 0 {
-                        Button("Xoá nhớ app") {
+                        HudButton(title: "Xoá nhớ app", color: HudTheme.amber, filled: false, compact: true) {
                             vm.clearPerAppMemory()
                         }
-                        .controlSize(.mini)
                     }
                 }
                 .padding(.top, 2)
             }
         }
-        .telemetryCard(cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.cobalt.opacity(0.55), chamfer: 9, padding: 11)
     }
 
     // MARK: - Macro Table
     private var macroCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Bảng gõ tắt (Macro)")
-                        .font(.system(size: 12.5, weight: .bold))
-                    Text("Tự mở rộng từ viết tắt khi nhấn Space / Enter")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("", isOn: $vm.imeSettings.macroEnabled)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-            }
+            HudToggleRow(
+                title: "Bảng gõ tắt (Macro)",
+                subtitle: "Tự mở rộng từ viết tắt khi nhấn Space / Enter",
+                isOn: $vm.imeSettings.macroEnabled,
+                accent: HudTheme.violet
+            )
 
             if vm.imeSettings.macroEnabled {
-                Divider().opacity(0.45)
+                Rectangle().fill(HudTheme.violet.opacity(0.25)).frame(height: 0.7)
 
                 HStack(spacing: 6) {
                     TextField("Từ tắt (vd: vn)", text: $newMacroKey)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(HudTheme.textPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5.5)
+                        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(HudTheme.violet.opacity(0.35), lineWidth: 0.75))
                         .frame(width: 96)
+
                     Image(systemName: "arrow.right")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HudTheme.violet)
+
                     TextField("Thay bằng (vd: Việt Nam)", text: $newMacroValue)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Thêm") {
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(HudTheme.textPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5.5)
+                        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(HudTheme.violet.opacity(0.35), lineWidth: 0.75))
+
+                    HudButton(
+                        title: "Thêm",
+                        color: HudTheme.violet,
+                        filled: true,
+                        compact: true,
+                        disabled: newMacroKey.trimmingCharacters(in: .whitespaces).isEmpty || newMacroValue.trimmingCharacters(in: .whitespaces).isEmpty
+                    ) {
                         vm.addMacro(key: newMacroKey, value: newMacroValue)
                         newMacroKey = ""
                         newMacroValue = ""
                     }
-                    .controlSize(.small)
-                    .buttonStyle(.borderedProminent)
-                    .tint(PulseTheme.cobalt)
-                    .disabled(newMacroKey.trimmingCharacters(in: .whitespaces).isEmpty || newMacroValue.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 let sortedKeys = vm.imeSettings.macroTable.keys.sorted()
@@ -402,10 +414,11 @@ struct VietnameseView: View {
                         if let val = vm.imeSettings.macroTable[key] {
                             HStack(spacing: 4) {
                                 Text(key)
-                                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(PulseTheme.cyan)
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(HudTheme.cyan)
                                 Text("→ \(val)")
                                     .font(.caption2)
+                                    .foregroundStyle(HudTheme.textPrimary)
                                     .lineLimit(1)
                                 Spacer(minLength: 0)
                                 Button {
@@ -413,50 +426,56 @@ struct VietnameseView: View {
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(HudTheme.textMuted)
                                 }
                                 .buttonStyle(.plain)
                             }
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
-                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(HudTheme.violet.opacity(0.22), lineWidth: 0.6))
                         }
                     }
                 }
 
                 HStack {
                     Text("\(vm.imeSettings.macroTable.count) từ gõ tắt")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(HudTheme.textMuted)
                     Spacer()
-                    Button("Đặt lại mặc định") {
+                    HudButton(title: "Đặt lại mặc định", color: HudTheme.textSecondary, filled: false, compact: true) {
                         vm.resetMacrosToDefault()
                     }
-                    .controlSize(.mini)
                 }
             }
         }
-        .telemetryCard(cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.violet.opacity(0.5), chamfer: 9, padding: 11)
     }
 
     // MARK: - Live Scratchpad
     private var scratchpadCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 SectionEyebrow(
                     icon: "character.cursor.ibeam",
                     title: "Khung gõ thử trực tiếp",
-                    color: vm.imeSettings.isEnabled ? PulseTheme.cyan : .secondary
+                    color: vm.imeSettings.isEnabled ? HudTheme.cyan : HudTheme.textMuted
                 )
                 if !vm.imeScratchpad.isEmpty {
-                    Button("Xoá") { vm.imeScratchpad = "" }
-                        .controlSize(.mini)
+                    HudButton(title: "Xoá", color: HudTheme.textSecondary, filled: false, compact: true) {
+                        vm.imeScratchpad = ""
+                    }
                 }
             }
             TextField("Gõ thử: vừa, quá, reset, pause, test, thương, tiếng Việt...", text: $vm.imeScratchpad)
-                .textFieldStyle(.roundedBorder)
-                .font(.subheadline)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .foregroundStyle(HudTheme.textPrimary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7.5)
+                .background(HudTheme.insetBg, in: ChamferedRect(cut: 5, cornerRadius: 3))
+                .overlay(ChamferedRect(cut: 5, cornerRadius: 3).strokeBorder(HudTheme.cyan.opacity(0.40), lineWidth: 0.85))
         }
-        .telemetryCard(cornerRadius: 11, padding: 11)
+        .hudCard(accent: HudTheme.cyan.opacity(0.55), chamfer: 9, padding: 11)
     }
 }

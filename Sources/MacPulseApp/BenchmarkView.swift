@@ -6,24 +6,24 @@ struct BenchmarkView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 11) {
                 headerLabCard
 
                 if let err = vm.benchmarkError {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(PulseTheme.crimson)
+                            .foregroundStyle(HudTheme.crimson)
                         Text(err)
                             .font(.caption)
-                            .foregroundStyle(PulseTheme.crimson)
+                            .foregroundStyle(HudTheme.crimson)
                     }
-                    .telemetryCard(accent: PulseTheme.crimson, cornerRadius: 9, padding: 9)
+                    .hudCard(accent: HudTheme.crimson, chamfer: 8, padding: 9)
                 }
 
                 if let res = vm.latestBenchmark {
                     let prev = vm.previousBenchmark
                     let cores = vm.hardwareSpecs.coreCount
-                    let diskLabel = "\(vm.hardwareSpecs.totalDiskGB)GB SSD"
+                    let diskLabel = "\(vm.hardwareSpecs.totalDiskGB)GB NVMe SSD"
 
                     VStack(spacing: 8) {
                         BenchLabRow(
@@ -93,17 +93,19 @@ struct BenchmarkView: View {
                 } else {
                     VStack(spacing: 8) {
                         Image(systemName: "speedometer")
-                            .font(.system(size: 26))
-                            .foregroundStyle(PulseTheme.cyan)
-                        Text("Chưa có dữ liệu đo hiệu năng")
-                            .font(.subheadline.weight(.semibold))
+                            .font(.system(size: 28))
+                            .foregroundStyle(HudTheme.cyan)
+                            .shadow(color: HudTheme.cyan.opacity(0.6), radius: 5)
+                        Text("SẴN SÀNG ĐO HIỆU NĂNG PHẦN CỨNG")
+                            .font(.system(size: 11.5, weight: .black, design: .monospaced))
+                            .foregroundStyle(HudTheme.textPrimary)
                         Text("Bấm \"Chạy Benchmark\" để đo thực tế CPU đa nhân, băng thông RAM và tốc độ đọc/ghi trực tiếp SSD (F_NOCACHE) trong ~2 giây.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.caption2)
+                            .foregroundStyle(HudTheme.textSecondary)
                             .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
-                    .telemetryCard(cornerRadius: 11, padding: 20)
+                    .hudCard(accent: HudTheme.cyan, chamfer: 10, padding: 20, showBrackets: true)
                 }
 
                 if vm.benchmarkHistory.count > 1 {
@@ -111,35 +113,37 @@ struct BenchmarkView: View {
                         HStack {
                             SectionEyebrow(
                                 icon: "clock.arrow.circlepath",
-                                title: "Lịch sử đo (\(vm.benchmarkHistory.count) lần)",
-                                color: PulseTheme.cobalt
+                                title: "Nhật ký đo hiệu năng",
+                                color: HudTheme.cobalt,
+                                trailingText: "\(vm.benchmarkHistory.count) LẦN"
                             )
-                            Button("Xoá lịch sử") {
+                            HudButton(title: "Xoá lịch sử", color: HudTheme.crimson, filled: false, compact: true) {
                                 vm.clearBenchmarkHistory()
                             }
-                            .controlSize(.mini)
                         }
 
                         ForEach(vm.benchmarkHistory.dropFirst().prefix(5)) { old in
                             let oldScore = BenchmarkRunner.compositeScore(for: old)
                             HStack(spacing: 8) {
                                 Text("\(oldScore)")
-                                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                                    .padding(.horizontal, 5.5)
+                                    .font(.system(size: 10.5, weight: .black, design: .monospaced))
+                                    .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(PulseTheme.cyan.opacity(0.14), in: Capsule())
-                                    .foregroundStyle(PulseTheme.cyan)
+                                    .background(HudTheme.cyan.opacity(0.16), in: Capsule())
+                                    .overlay(Capsule().strokeBorder(HudTheme.cyan.opacity(0.4), lineWidth: 0.6))
+                                    .foregroundStyle(HudTheme.cyan)
                                 Text(old.timestamp, style: .relative)
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(HudTheme.textSecondary)
                                 Spacer()
                                 Text(String(format: "W %.0f / R %.0f MB/s • RAM %.0f GB/s", old.diskWriteMBs, old.diskReadMBs, old.memoryBandwidthGBs))
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(HudTheme.textPrimary.opacity(0.85))
                             }
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+                            .padding(.vertical, 6.5)
+                            .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(HudTheme.cobalt.opacity(0.22), lineWidth: 0.6))
                         }
                     }
                 }
@@ -159,72 +163,83 @@ struct BenchmarkView: View {
                     let score = BenchmarkRunner.compositeScore(for: res)
                     ArcHealthGauge(
                         score: score,
-                        color: score >= 75 ? PulseTheme.emerald : (score >= 50 ? PulseTheme.cyan : PulseTheme.amber),
-                        size: 52
+                        color: score >= 75 ? HudTheme.emerald : (score >= 50 ? HudTheme.cyan : HudTheme.amber),
+                        size: 54
                     )
                 } else {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(PulseTheme.cyan.opacity(0.16))
+                        ChamferedRect(cut: 7, cornerRadius: 3)
+                            .fill(HudTheme.cyan.opacity(0.18))
+                            .overlay(ChamferedRect(cut: 7, cornerRadius: 3).strokeBorder(HudTheme.cyan.opacity(0.55), lineWidth: 0.8))
                             .frame(width: 46, height: 46)
                         Image(systemName: "speedometer")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(PulseTheme.cyan)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(HudTheme.cyan)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Phòng đo Hiệu năng Thực tế")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                VStack(alignment: .leading, spacing: 2.5) {
+                    Text("HARDWARE BENCHMARK LAB")
+                        .font(.system(size: 12.5, weight: .black, design: .monospaced))
+                        .tracking(0.8)
+                        .foregroundStyle(HudTheme.textPrimary)
                     Text("\(vm.hardwareSpecs.compactBadge) • \(vm.benchmarkStatus)")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
                 }
 
                 Spacer()
 
-                Button {
+                HudButton(
+                    title: vm.isBenchmarkRunning ? "Đang đo..." : "Chạy Benchmark",
+                    icon: "play.fill",
+                    color: HudTheme.cyan,
+                    filled: true,
+                    compact: false,
+                    disabled: vm.isBenchmarkRunning
+                ) {
                     vm.runBenchmark()
-                } label: {
-                    HStack(spacing: 5) {
-                        if vm.isBenchmarkRunning {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 10))
-                        }
-                        Text(vm.isBenchmarkRunning ? "Đang đo..." : "Chạy Benchmark")
-                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(PulseTheme.cobalt)
-                .controlSize(.small)
-                .disabled(vm.isBenchmarkRunning)
             }
 
             if !vm.availableLocalSites.isEmpty {
-                Divider().opacity(0.4)
+                Rectangle().fill(HudTheme.cyan.opacity(0.2)).frame(height: 0.7)
                 HStack(spacing: 8) {
                     Image(systemName: "globe")
                         .font(.caption2)
-                        .foregroundStyle(PulseTheme.cyan)
-                    Text("Đo thêm độ trễ LocalWP:")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Picker("", selection: $vm.selectedLocalSiteForBench) {
-                        Text("Tắt (Nhanh nhất)").tag("")
+                        .foregroundStyle(HudTheme.cyan)
+                    Text("ĐO THÊM LOCALWP:")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(HudTheme.textSecondary)
+
+                    Menu {
+                        Button("Tắt (Nhanh nhất)") { vm.selectedLocalSiteForBench = "" }
+                        Divider()
                         ForEach(vm.availableLocalSites, id: \.self) { site in
-                            Text("\(site).local").tag(site)
+                            Button("\(site).local") { vm.selectedLocalSiteForBench = site }
                         }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(vm.selectedLocalSiteForBench.isEmpty ? "Tắt (Nhanh nhất)" : "\(vm.selectedLocalSiteForBench).local")
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(HudTheme.cyan)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(HudTheme.textSecondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(HudTheme.cyan.opacity(0.35), lineWidth: 0.75))
                     }
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(maxWidth: 180)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+
                     Spacer()
                 }
             }
         }
-        .telemetryCard(accent: PulseTheme.cobalt, cornerRadius: 12, padding: 12)
+        .hudCard(accent: HudTheme.cyan, chamfer: 10, padding: 12, showBrackets: true)
     }
 }
 
@@ -240,23 +255,25 @@ private struct BenchLabRow: View {
     var lowerIsBetter: Bool = false
 
     private var accentColor: Color {
-        ok ? PulseTheme.emerald : PulseTheme.amber
+        ok ? HudTheme.emerald : HudTheme.amber
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6.5) {
             HStack(alignment: .center, spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(accentColor)
+                    .shadow(color: accentColor.opacity(0.55), radius: 3)
                     .frame(width: 18)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(HudTheme.textPrimary)
                     Text(baseline)
                         .font(.system(size: 9.5))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HudTheme.textSecondary)
                 }
 
                 Spacer()
@@ -264,18 +281,20 @@ private struct BenchLabRow: View {
                 HStack(spacing: 6) {
                     DeltaBadge(current: currentRaw, previous: previousRaw, lowerIsBetter: lowerIsBetter)
                     Text(value)
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
                         .foregroundStyle(accentColor)
+                        .shadow(color: accentColor.opacity(0.45), radius: 3)
                 }
             }
 
             TickProgressBar(
                 ratio: max(0.08, min(1.0, ratio)),
                 color: accentColor,
-                height: 5.5,
-                showTicks: true
+                height: 6,
+                showTicks: true,
+                segments: 24
             )
         }
-        .telemetryCard(accent: accentColor, cornerRadius: 10, padding: 10)
+        .hudCard(accent: accentColor, chamfer: 8, padding: 10, showBrackets: false)
     }
 }
