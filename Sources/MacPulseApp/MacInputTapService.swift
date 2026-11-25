@@ -74,6 +74,14 @@ public final class MacInputTapService {
         ("com.trankynam.GoTiengViet", "GoTiengViet")
     ]
 
+    private struct TapFastState {
+        var isEnabled: Bool
+        var hotkey: VietnameseHotkey
+        var useCapsLock: Bool
+        var fixChrome: Bool
+        var isExcludedApp: Bool
+    }
+
     private var stateLock = os_unfair_lock()
     private let engine: VietnameseEngine
     private var settings: VietnameseSettings
@@ -81,12 +89,15 @@ public final class MacInputTapService {
     private var currentBundleID: String
     private var currentAppName: String
 
-    // Fast-path cached copies for the tap thread (read lock-free or via unfair lock)
-    private var fastIsEnabled: Bool
-    private var fastHotkey: VietnameseHotkey
-    private var fastUseCapsLock: Bool
-    private var fastFixChrome: Bool
-    private var fastIsExcludedApp: Bool
+    // Snapshot of hot-path settings accessed under os_unfair_lock (~15ns, zero data race)
+    private var fastState: TapFastState
+
+    private func readFastState() -> TapFastState {
+        os_unfair_lock_lock(&stateLock)
+        let s = fastState
+        os_unfair_lock_unlock(&stateLock)
+        return s
+    }
 
     private var eventSource: CGEventSource?
 
@@ -110,26 +121,29 @@ public final class MacInputTapService {
         self.settings = settings
         self.perAppEnabled = perAppEnabled
         self.engine = VietnameseEngine(settings: settings)
-        self.fastIsEnabled = settings.isEnabled
-        self.fastHotkey = settings.hotkey
-        self.fastUseCapsLock = settings.useCapsLockToSwitch
-        self.fastFixChrome = settings.fixChromiumAutocomplete
         let front = NSWorkspace.shared.frontmostApplication
         let frontBid = front?.bundleIdentifier ?? ""
         let frontName = front?.localizedName ?? frontBid
         self.currentBundleID = frontBid
         self.currentAppName = frontName
         let isExcluded = Self.computeIsAppExcluded(bundleID: frontBid, appName: frontName, settings: settings, perAppEnabled: perAppEnabled)
-        self.fastIsExcludedApp = isExcluded
+        var initialEnabled = settings.isEnabled
         if settings.smartSwitchPerApp && !frontBid.isEmpty {
             if let saved = perAppEnabled[frontBid] {
-                self.fastIsEnabled = saved
+                initialEnabled = saved
                 self.settings.isEnabled = saved
             } else if isExcluded {
-                self.fastIsEnabled = false
+                initialEnabled = false
                 self.settings.isEnabled = false
             }
         }
+        self.fastState = TapFastState(
+            isEnabled: initialEnabled,
+            hotkey: settings.hotkey,
+            useCapsLock: settings.useCapsLockToSwitch,
+            fixChrome: settings.fixChromiumAutocomplete,
+            isExcludedApp: isExcluded
+        )
         // Use private state event source so synthetic events NEVER contaminate hardware HID device state
         self.eventSource = CGEventSource(stateID: .privateState)
     }
@@ -159,11 +173,14 @@ public final class MacInputTapService {
         let prevEnabled = settings.isEnabled
         settings = newSettings
         engine.settings = newSettings
-        fastIsEnabled = newSettings.isEnabled
-        fastHotkey = newSettings.hotkey
-        fastUseCapsLock = newSettings.useCapsLockToSwitch
-        fastFixChrome = newSettings.fixChromiumAutocomplete
-        fastIsExcludedApp = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings, perAppEnabled: perAppEnabled)
+        let isExcluded = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings, perAppEnabled: perAppEnabled)
+        fastState = TapFastState(
+            isEnabled: newSettings.isEnabled,
+            hotkey: newSettings.hotkey,
+            useCapsLock: newSettings.useCapsLockToSwitch,
+            fixChrome: newSettings.fixChromiumAutocomplete,
+            isExcludedApp: isExcluded
+        )
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
         if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
             perAppEnabled[currentBundleID] = newSettings.isEnabled
@@ -218,6 +235,24 @@ public final class MacInputTapService {
     public static func isSystemVietnameseInputSourceActive() -> Bool {
         let id = activeSystemInputSourceID().lowercased()
         return id.contains("vietnameseim") || id.contains("vielotus") || id.contains("bevie")
+    }
+
+    @discardableResult
+    public static func switchSystemInputSourceToABC() -> Bool {
+        let preferredIDs = [
+            "com.apple.keylayout.ABC",
+            "com.apple.keylayout.US"
+        ]
+        for targetID in preferredIDs {
+            let filter = [kTISPropertyInputSourceID as String: targetID] as CFDictionary
+            if let list = TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource],
+               let src = list.first {
+                if TISSelectInputSource(src) == noErr {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     public static func detectConflictingApps() -> [ActiveInputConflict] {
@@ -328,13 +363,13 @@ public final class MacInputTapService {
             self.currentAppName = name
             self.engine.reset()
             let isExcluded = Self.computeIsAppExcluded(bundleID: bid, appName: name, settings: self.settings, perAppEnabled: self.perAppEnabled)
-            self.fastIsExcludedApp = isExcluded
+            self.fastState.isExcludedApp = isExcluded
             var switchedLanguage: Bool?
             if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
                 if let saved = self.perAppEnabled[bid] {
                     if saved != self.settings.isEnabled {
                         self.settings.isEnabled = saved
-                        self.fastIsEnabled = saved
+                        self.fastState.isEnabled = saved
                         self.engine.settings = self.settings
                         switchedLanguage = saved
                     }
@@ -342,7 +377,7 @@ public final class MacInputTapService {
                     // VPS, Remote Desktop or Terminal app without explicit override defaults to English!
                     if self.settings.isEnabled {
                         self.settings.isEnabled = false
-                        self.fastIsEnabled = false
+                        self.fastState.isEnabled = false
                         self.engine.settings = self.settings
                         switchedLanguage = false
                     }
@@ -355,10 +390,6 @@ public final class MacInputTapService {
                 if let lang = switchedLanguage {
                     self.onLanguageToggled?(lang, bid)
                 }
-            }
-
-            DispatchQueue.global(qos: .utility).async {
-                Self.terminateConflictingApps()
             }
         }
     }
@@ -476,7 +507,8 @@ public final class MacInputTapService {
         }
 
         if type == .leftMouseDown || type == .rightMouseDown {
-            if fastIsEnabled {
+            let snap = readFastState()
+            if snap.isEnabled {
                 os_unfair_lock_lock(&stateLock)
                 engine.reset()
                 os_unfair_lock_unlock(&stateLock)
@@ -498,10 +530,11 @@ public final class MacInputTapService {
     }
 
     private func handleFlagsChanged(_ event: CGEvent) {
-        if fastIsExcludedApp { return }
+        let snap = readFastState()
+        if snap.isExcludedApp { return }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let hotkey = fastHotkey
-        let useCaps = fastUseCapsLock
+        let hotkey = snap.hotkey
+        let useCaps = snap.useCapsLock
 
         if (hotkey == .capsLock || useCaps) && keyCode == 0x39 {
             toggleLanguageFromHotkey()
@@ -554,14 +587,15 @@ public final class MacInputTapService {
         // Fast-path bypass for excluded applications (Windows App, Remote Desktop, VPS clients):
         // Pass all keystrokes through immediately with 0 delay, 0 backspaces, 0 state mutation.
         // Also preserves Windows shortcuts (Ctrl+Space for IntelliSense, Alt+keys, etc.) without swallowing!
-        if fastIsExcludedApp {
+        let snap = readFastState()
+        if snap.isExcludedApp {
             return Unmanaged.passUnretained(event)
         }
 
         let flags = event.flags
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let hotkey = fastHotkey
-        let isEnabled = fastIsEnabled
+        let hotkey = snap.hotkey
+        let isEnabled = snap.isEnabled
 
         if hotkey == .optionZ && keyCode == 0x06 && flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl) {
             toggleLanguageFromHotkey()
@@ -595,14 +629,14 @@ public final class MacInputTapService {
             os_unfair_lock_lock(&stateLock)
             let action = engine.processBackspace()
             let bundleID = currentBundleID
-            let fixChrome = fastFixChrome
+            let fixChrome = fastState.fixChrome
             os_unfair_lock_unlock(&stateLock)
             return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
         case 0x35:
             os_unfair_lock_lock(&stateLock)
             let action = engine.processEscape()
             let bundleID = currentBundleID
-            let fixChrome = fastFixChrome
+            let fixChrome = fastState.fixChrome
             os_unfair_lock_unlock(&stateLock)
             if case .replace = action {
                 return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
@@ -641,7 +675,7 @@ public final class MacInputTapService {
         os_unfair_lock_lock(&stateLock)
         let action = engine.processCharacter(ch)
         let bundleID = currentBundleID
-        let fixChrome = fastFixChrome
+        let fixChrome = fastState.fixChrome
         os_unfair_lock_unlock(&stateLock)
 
         return applyAction(action, proxy: proxy, originalEvent: event, bundleID: bundleID, fixChrome: fixChrome)
@@ -651,7 +685,7 @@ public final class MacInputTapService {
         os_unfair_lock_lock(&stateLock)
         let nextEnabled = !settings.isEnabled
         settings.isEnabled = nextEnabled
-        fastIsEnabled = nextEnabled
+        fastState.isEnabled = nextEnabled
         engine.settings = settings
         engine.reset()
         let bid = currentBundleID
@@ -710,6 +744,9 @@ public final class MacInputTapService {
         guard let src = eventSource else { return }
 
         let isBrowser = fixChrome && VietnameseAppDetector.isBrowserOrSearchApp(bundleID: bundleID)
+        let isLongReplacement = text.count > 8
+        let bsDelay: useconds_t = isLongReplacement ? 300 : 450
+        let chDelay: useconds_t = isLongReplacement ? 220 : 350
 
         if backspaceCount > 0 && isBrowser {
             // Cancel / collapse active browser Omnibox, Safari address bar, or Spotlight
@@ -723,7 +760,7 @@ public final class MacInputTapService {
                 down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &zwnj)
                 down.tapPostEvent(proxy)
             }
-            usleep(600)
+            usleep(350)
             if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
                 up.flags = []
                 up.timestamp = mach_absolute_time()
@@ -732,7 +769,7 @@ public final class MacInputTapService {
                 up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &zwnj)
                 up.tapPostEvent(proxy)
             }
-            usleep(600)
+            usleep(350)
         }
 
         let totalBackspaces = (backspaceCount > 0 && isBrowser) ? (backspaceCount + 1) : backspaceCount
@@ -747,14 +784,14 @@ public final class MacInputTapService {
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     down.tapPostEvent(proxy)
                 }
-                usleep(800)
+                usleep(bsDelay)
                 if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
                     up.flags = []
                     up.timestamp = mach_absolute_time()
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
                     up.tapPostEvent(proxy)
                 }
-                usleep(800)
+                usleep(bsDelay)
             }
         }
 
@@ -771,7 +808,7 @@ public final class MacInputTapService {
                     down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                     down.tapPostEvent(proxy)
                 }
-                usleep(600)
+                usleep(chDelay)
                 if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
                     up.flags = []
                     up.timestamp = mach_absolute_time()
@@ -779,7 +816,7 @@ public final class MacInputTapService {
                     up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
                     up.tapPostEvent(proxy)
                 }
-                usleep(600)
+                usleep(chDelay)
             }
         }
     }

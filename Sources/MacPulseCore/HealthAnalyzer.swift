@@ -1,9 +1,29 @@
 import Foundation
 
 public enum HealthAnalyzer {
-    public static func analyze(snapshot: SystemSnapshot, processGroups: [ProcessGroupSummary]) -> HealthReport {
+    public static func analyze(
+        snapshot: SystemSnapshot,
+        processGroups: [ProcessGroupSummary],
+        stuckChromeRendererCount: Int = 0,
+        stuckChromeRendererCPU: Double = 0
+    ) -> HealthReport {
         var score = 100
         var findings: [DiagnosticFinding] = []
+
+        if snapshot.thermalLevel == .serious || snapshot.thermalLevel == .critical {
+            let isCrit = snapshot.thermalLevel == .critical
+            score -= isCrit ? 18 : 10
+            findings.append(DiagnosticFinding(
+                id: "thermal-pressure",
+                severity: isCrit ? .critical : .warning,
+                title: "Nhiệt độ máy ở mức \(snapshot.thermalLevel.label)",
+                detail: "macOS đang kích hoạt giảm xung nhiệt (Thermal Throttling) để bảo vệ chip.",
+                recommendedAction: .none,
+                targetID: nil,
+                safetyLevel: .cautionSaveFirst,
+                impactNote: "Đóng bớt tiến trình ăn CPU cao hoặc dừng cụm Chrome headless bên dưới để hạ nhiệt nhanh."
+            ))
+        }
 
         if let replayd = processGroups.first(where: { $0.id == "sys:replayd" }), replayd.totalCPUPercent >= 25.0 {
             let isSevere = replayd.totalCPUPercent >= 70.0
@@ -53,35 +73,52 @@ public enum HealthAnalyzer {
                 ? "Chrome automation chạy ngầm (\(Formatters.bytes(orphan.totalRSSBytes)))"
                 : "Chrome bị chặn mở bởi tiến trình ngầm (\(Formatters.bytes(orphan.totalRSSBytes)))"
             let detail = hasLiveGUIChrome
-                ? "Tiến trình Chrome headless/automation (Playwright/Puppeteer/Bot) đang chạy ngầm (\(Int(orphan.totalCPUPercent))% CPU)."
-                : "Phát hiện tiến trình Chrome headless ngầm (OpenMausBot/Playwright/AI) đang chiếm quyền của Google Chrome, khiến macOS từ chối mở cửa sổ Chrome."
-            let actionLabel = hasLiveGUIChrome ? "Dọn ngay" : "Gỡ kẹt & Mở Chrome"
+                ? "Cụm Chrome headless / agent-browser đang chạy ngầm (\(Int(orphan.totalCPUPercent))% CPU • \(orphan.processCount) tiến trình)."
+                : "Phát hiện cụm Chrome headless ngầm (agent-browser/OpenMausBot/Playwright) đang giữ khoá profile Google Chrome."
+            let actionLabel = hasLiveGUIChrome ? "Dừng & Reset" : "Gỡ kẹt & Mở Chrome"
 
             findings.append(DiagnosticFinding(
                 id: "orphan-puppeteer",
-                severity: .warning,
+                severity: orphan.totalCPUPercent >= 40 ? .critical : .warning,
                 title: title,
                 detail: detail,
                 recommendedAction: .killOrphanPuppeteer,
                 targetID: orphan.id,
                 safetyLevel: .safeNow,
-                impactNote: "An toàn 100%: Tắt tiến trình bot ngầm để giải phóng Google Chrome và mở lại bình thường.",
+                impactNote: "An toàn 100%: Dừng cụm bot ngầm & gỡ khoá profile, không đụng Chrome thường đang mở.",
                 actionLabel: actionLabel
             ))
         }
 
-        // Surface any user app saturating CPU (e.g. ChatGPT / Codex / node / Loom) so user gets a direct Close + Info action
-        if let hotUserApp = processGroups.first(where: {
+        if stuckChromeRendererCount > 0 && stuckChromeRendererCPU >= 25.0 {
+            score -= 10
+            findings.append(DiagnosticFinding(
+                id: "stuck-chrome-renderers",
+                severity: stuckChromeRendererCPU >= 80 ? .critical : .warning,
+                title: "\(stuckChromeRendererCount) tab Chrome đang kẹt / ăn \(Int(stuckChromeRendererCPU))% CPU",
+                detail: "Tab localhost hoặc vòng lặp JS đang treo tiến trình render, dễ làm đơ toàn bộ trình duyệt.",
+                recommendedAction: .killStuckChromeRenderers,
+                targetID: "app:Google Chrome",
+                safetyLevel: .safeNow,
+                impactNote: "Chỉ dừng riêng tab bị treo (hiện trang Aw Snap để F5), giữ nguyên 100% tab khác & Extension.",
+                actionLabel: "Gỡ kẹt tab"
+            ))
+        }
+
+        // Surface up to 2 user apps saturating CPU or RAM so user gets direct Close + Info actions
+        let hotUserApps = processGroups.filter {
             !$0.isOrphanAutomation
             && $0.guidance.safetyLevel == .cautionSaveFirst
             && ($0.totalCPUPercent >= 55.0 || $0.totalRSSBytes >= 2_500_000_000)
             && $0.id != "app:Google Chrome"
-        }) {
+        }.prefix(2)
+
+        for hotUserApp in hotUserApps {
             let isHotCPU = hotUserApp.totalCPUPercent >= 55.0
-            score -= isHotCPU ? 14 : 8
+            score -= isHotCPU ? 12 : 7
             findings.append(DiagnosticFinding(
                 id: "hot-user-app-\(hotUserApp.id)",
-                severity: isHotCPU ? .warning : .warning,
+                severity: .warning,
                 title: "\(hotUserApp.displayName) đang ngốn tải (\(Int(hotUserApp.totalCPUPercent))% CPU • \(Formatters.bytes(hotUserApp.totalRSSBytes)) RAM)",
                 detail: hotUserApp.guidance.currentActivityHint,
                 recommendedAction: hotUserApp.actionKind == .none ? .terminateUserProcess : hotUserApp.actionKind,

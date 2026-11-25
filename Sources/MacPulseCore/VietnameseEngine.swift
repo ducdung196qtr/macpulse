@@ -176,7 +176,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.macroEnabled = try container.decodeIfPresent(Bool.self, forKey: .macroEnabled) ?? true
         self.macroTable = try container.decodeIfPresent([String: String].self, forKey: .macroTable) ?? Self.defaultMacroTable
         self.useCapsLockToSwitch = try container.decodeIfPresent(Bool.self, forKey: .useCapsLockToSwitch) ?? false
-        self.quickTelex = try container.decodeIfPresent(Bool.self, forKey: .quickTelex) ?? true
+        self.quickTelex = try container.decodeIfPresent(Bool.self, forKey: .quickTelex) ?? false
         self.smartEnglishRestore = try container.decodeIfPresent(Bool.self, forKey: .smartEnglishRestore) ?? true
         self.autoCapitalize = try container.decodeIfPresent(Bool.self, forKey: .autoCapitalize) ?? false
         self.autoBypassVPSAndRemote = try container.decodeIfPresent(Bool.self, forKey: .autoBypassVPSAndRemote) ?? true
@@ -215,6 +215,8 @@ public enum VietnameseAppDetector {
         "tv.parsec.parsec",
         "com.remotedesktopmanager",
         "com.fluidapp.FluidApp2",
+        "com.apple.ScreenSharing",
+        "com.jumpdesktop.mac",
         // Virtual Machines
         "com.utmapp.UTM",
         "com.parallels.desktop.console",
@@ -280,9 +282,9 @@ public enum VietnameseAppDetector {
             || bLower.contains("windowsapp") {
             return true
         }
-        if nLower.contains("windows app") || nLower.contains("remote desktop") || nLower.contains("anydesk")
+        if nLower == "windows app" || nLower.hasPrefix("windows app") || nLower.contains("remote desktop") || nLower.contains("anydesk")
             || nLower.contains("rustdesk") || nLower.contains("teamviewer") || nLower.contains("vnc viewer")
-            || nLower.contains("termius") || nLower.contains("windows") {
+            || nLower.contains("termius") || nLower.contains("screen sharing") || nLower.contains("jump desktop") {
             return true
         }
         return false

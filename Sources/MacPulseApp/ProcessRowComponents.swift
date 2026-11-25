@@ -17,37 +17,47 @@ struct ProcessRowView: View {
 
     private var safetyColor: Color {
         switch group.guidance.safetyLevel {
-        case .safeNow: return .green
-        case .cautionSaveFirst: return .orange
-        case .remoteKeepAlive: return .red
+        case .safeNow: return PulseTheme.emerald
+        case .cautionSaveFirst: return PulseTheme.amber
+        case .remoteKeepAlive: return PulseTheme.crimson
         case .systemProtected: return .secondary
         }
+    }
+
+    private var cpuIntensity: Double {
+        min(1.0, group.totalCPUPercent / 100.0)
+    }
+
+    private var ramIntensity: Double {
+        let totalRAM = max(1.0, Double(vm.hardwareSpecs.totalRAMBytes))
+        return min(1.0, Double(group.totalRSSBytes) / (totalRAM * 0.35))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(group.guidance.safetyLevel.badgeLabel)
-                    .font(.system(size: 9, weight: .semibold))
-                    .padding(.horizontal, 5)
+                    .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 5.5)
                     .padding(.vertical, 2)
-                    .background(safetyColor.opacity(0.14), in: Capsule())
+                    .background(safetyColor.opacity(0.15), in: Capsule())
+                    .overlay(Capsule().strokeBorder(safetyColor.opacity(0.30), lineWidth: 0.6))
                     .foregroundStyle(safetyColor)
 
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(group.displayName)
-                            .font(.subheadline.weight(.medium))
+                            .font(.system(size: 12, weight: .semibold))
                             .lineLimit(1)
                         if group.processCount > 1 {
-                            Text("(\(group.processCount))")
-                                .font(.caption2)
+                            Text("×\(group.processCount)")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
                     }
                     if highlightRAM {
                         Text(String(format: "CPU %.0f%%", group.totalCPUPercent))
-                            .font(.caption2.monospacedDigit())
+                            .font(.system(size: 9.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -55,16 +65,22 @@ struct ProcessRowView: View {
                 Spacer(minLength: 4)
 
                 if !highlightRAM {
-                    Text(String(format: "%.0f%%", group.totalCPUPercent))
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(cpuColor)
-                        .frame(width: 44, alignment: .trailing)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(String(format: "%.0f%%", group.totalCPUPercent))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(cpuColor)
+                        microLoadBar(ratio: cpuIntensity, color: cpuColor)
+                    }
+                    .frame(width: 44, alignment: .trailing)
                 }
 
-                Text(Formatters.bytes(group.totalRSSBytes))
-                    .font(.caption.monospacedDigit().weight(highlightRAM ? .semibold : .regular))
-                    .foregroundStyle(highlightRAM ? .primary : .secondary)
-                    .frame(width: 68, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(Formatters.bytes(group.totalRSSBytes))
+                        .font(.system(size: 11, weight: highlightRAM ? .bold : .medium, design: .monospaced))
+                        .foregroundStyle(highlightRAM ? .primary : .secondary)
+                    microLoadBar(ratio: ramIntensity, color: highlightRAM ? PulseTheme.cyan : PulseTheme.cobalt.opacity(0.8))
+                }
+                .frame(width: 68, alignment: .trailing)
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.14)) {
@@ -76,9 +92,9 @@ struct ProcessRowView: View {
                     }
                 } label: {
                     Image(systemName: showGuidanceCard ? "info.circle.fill" : "info.circle")
-                        .font(.system(size: 14))
-                        .foregroundStyle(showGuidanceCard ? Color.accentColor : Color.secondary)
-                        .frame(width: 22, height: 22)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(showGuidanceCard ? PulseTheme.cyan : .secondary)
+                        .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -98,13 +114,21 @@ struct ProcessRowView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(showGuidanceCard ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.06), lineWidth: 1)
+        .telemetryCard(
+            accent: group.isOrphanAutomation ? PulseTheme.amber : (showGuidanceCard ? PulseTheme.cyan : nil),
+            cornerRadius: 9,
+            padding: 8
         )
+    }
+
+    private func microLoadBar(ratio: Double, color: Color) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(Color.primary.opacity(0.08))
+            Capsule()
+                .fill(color)
+                .frame(width: max(2, 34 * CGFloat(max(0, min(1, ratio)))))
+        }
+        .frame(width: 34, height: 2.5)
     }
 
     @ViewBuilder
@@ -114,11 +138,12 @@ struct ProcessRowView: View {
                 vm.requestCloseProcess(group)
             } label: {
                 Text("Dừng & Reset")
-                    .font(.caption2.weight(.semibold))
+                    .font(.system(size: 10, weight: .bold))
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundStyle(.orange)
+                    .padding(.vertical, 3.5)
+                    .background(PulseTheme.amber.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(PulseTheme.amber.opacity(0.4), lineWidth: 0.7))
+                    .foregroundStyle(PulseTheme.amber)
             }
             .buttonStyle(.plain)
         } else if group.actionKind == .inspectBrowserTabs {
@@ -130,11 +155,11 @@ struct ProcessRowView: View {
                     }
                 } label: {
                     Text("Soi tab")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 5))
-                        .foregroundStyle(.blue)
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 6.5)
+                        .padding(.vertical, 3.5)
+                        .background(PulseTheme.cyan.opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
+                        .foregroundStyle(PulseTheme.cyan)
                 }
                 .buttonStyle(.plain)
 
@@ -142,10 +167,10 @@ struct ProcessRowView: View {
                     vm.pendingTerminationGroup = group
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 9.5, weight: .bold))
                         .frame(width: 20, height: 20)
-                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-                        .foregroundStyle(.red)
+                        .background(PulseTheme.crimson.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
+                        .foregroundStyle(PulseTheme.crimson)
                 }
                 .buttonStyle(.plain)
                 .help("Đóng cả ứng dụng \(group.displayName) (sẽ hỏi xác nhận)")
@@ -155,11 +180,11 @@ struct ProcessRowView: View {
                 vm.requestCloseProcess(group)
             } label: {
                 Text("Đóng")
-                    .font(.caption2.weight(.semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.red.opacity(0.13), in: RoundedRectangle(cornerRadius: 5))
-                    .foregroundStyle(.red)
+                    .padding(.vertical, 3.5)
+                    .background(PulseTheme.crimson.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
+                    .foregroundStyle(PulseTheme.crimson)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("close_\(group.id)")
@@ -174,8 +199,8 @@ struct ProcessRowView: View {
     }
 
     private var cpuColor: Color {
-        if group.totalCPUPercent >= 50 { return .red }
-        if group.totalCPUPercent >= 18 { return .orange }
+        if group.totalCPUPercent >= 50 { return PulseTheme.crimson }
+        if group.totalCPUPercent >= 18 { return PulseTheme.amber }
         return .primary
     }
 }
@@ -189,27 +214,27 @@ struct GuidanceDetailCard: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
             HStack(alignment: .top, spacing: 5) {
-                Text("Đang làm gì:")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.blue)
+                Text("Trạng thái:")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(PulseTheme.cyan)
                 Text(guidance.currentActivityHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 5) {
-                Text("Tắt có sao không:")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.orange)
+                Text("Tác động:")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(PulseTheme.amber)
                 Text(guidance.impactIfClosed)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 5) {
-                Text("Gợi ý:")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.green)
+                Text("Khuyến nghị:")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(PulseTheme.emerald)
                 Text(guidance.recommendedHowTo)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -218,7 +243,8 @@ struct GuidanceDetailCard: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+        .background(PulseTheme.cyan.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(PulseTheme.cyan.opacity(0.20), lineWidth: 0.6))
     }
 }
 
@@ -230,13 +256,13 @@ struct InlineConfirmTerminationCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(PulseTheme.amber)
                 Text("Xác nhận đóng \(group.displayName)")
                     .font(.subheadline.weight(.bold))
                 Spacer()
                 Text("~\(Formatters.bytes(group.totalRSSBytes)) RAM")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.blue)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(PulseTheme.cyan)
             }
 
             Text("Trạng thái: \(group.guidance.currentActivityHint)")
@@ -254,6 +280,7 @@ struct InlineConfirmTerminationCard: View {
                         vm.scanBrowserTabs()
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(PulseTheme.cyan)
                     .controlSize(.small)
                 }
 
@@ -261,7 +288,7 @@ struct InlineConfirmTerminationCard: View {
                     vm.confirmTermination(for: group, force: false)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.orange)
+                .tint(PulseTheme.amber)
                 .controlSize(.small)
 
                 if group.canForceTerminate {
@@ -269,7 +296,7 @@ struct InlineConfirmTerminationCard: View {
                         vm.confirmTermination(for: group, force: true)
                     }
                     .buttonStyle(.bordered)
-                    .tint(.red)
+                    .tint(PulseTheme.crimson)
                     .controlSize(.small)
                 }
 
@@ -281,12 +308,7 @@ struct InlineConfirmTerminationCard: View {
                 .controlSize(.small)
             }
         }
-        .padding(11)
-        .background(Color.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.orange.opacity(0.45), lineWidth: 1)
-        )
+        .telemetryCard(accent: PulseTheme.amber, cornerRadius: 11, padding: 11)
     }
 }
 
@@ -296,10 +318,10 @@ struct BrowserTabsInspectorCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: "safari")
-                    .foregroundStyle(.blue)
-                Text("Quản lý Tab Chrome / Edge (\(vm.openBrowserTabs.count) tab)")
-                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "macwindow.on.rectangle")
+                    .foregroundStyle(PulseTheme.cyan)
+                Text("Quản lý Tab Đa Trình Duyệt (\(vm.openBrowserTabs.count) tab)")
+                    .font(.system(size: 12.5, weight: .bold))
                 Spacer()
                 Button(vm.isScanningTabs ? "Đang quét..." : "Quét lại") {
                     vm.scanBrowserTabs()
@@ -320,65 +342,100 @@ struct BrowserTabsInspectorCard: View {
                 ForEach(vm.tabWarnings, id: \.self) { w in
                     Text("Lưu ý quyền Automation: \(w)")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(PulseTheme.amber)
                 }
             }
 
             if !vm.duplicateTabs.isEmpty {
                 HStack {
-                    Text("Phát hiện \(vm.duplicateTabs.count) nhóm URL mở trùng")
+                    Image(systemName: "square.on.square.dashed")
+                        .font(.caption)
+                        .foregroundStyle(PulseTheme.amber)
+                    Text("Phát hiện \(vm.duplicateTabs.count) nhóm URL mở trùng lặp")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(PulseTheme.amber)
                     Spacer()
                     Button("Đóng tất cả bản trùng") {
                         vm.closeDuplicateExtras()
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.orange)
+                    .tint(PulseTheme.amber)
                     .controlSize(.mini)
                 }
+                .padding(7)
+                .background(PulseTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
             }
 
-            if vm.openBrowserTabs.isEmpty && !vm.isScanningTabs {
-                Text("Không đọc được tab nào hoặc trình duyệt chưa mở tab.")
+            if !vm.openBrowserTabs.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    TextField("Lọc theo tiêu đề, URL hoặc tên trình duyệt...", text: $vm.tabSearchQuery)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                    if !vm.tabSearchQuery.isEmpty {
+                        Button {
+                            vm.tabSearchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4.5)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            let matching = vm.filteredBrowserTabs
+            let shown = vm.showAllTabs ? matching : Array(matching.prefix(12))
+
+            if matching.isEmpty && !vm.isScanningTabs {
+                Text(vm.openBrowserTabs.isEmpty
+                     ? "Không đọc được tab nào hoặc trình duyệt (Chrome, Brave, Edge, Arc, Safari) chưa mở tab."
+                     : "Không có tab nào khớp từ khoá tìm kiếm.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 4) {
-                    ForEach(vm.openBrowserTabs.prefix(12)) { tab in
+                    ForEach(shown) { tab in
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(tab.title.isEmpty ? tab.url : tab.title)
                                     .font(.caption.weight(.medium))
                                     .lineLimit(1)
                                 Text("\(tab.browser) • \(tab.url)")
-                                    .font(.caption2)
+                                    .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
                             Spacer()
-                            Button("Đóng tab") {
+                            Button("Đóng") {
                                 vm.closeSingleBrowserTab(tab)
                             }
                             .controlSize(.mini)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
-                        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
                     }
-                    if vm.openBrowserTabs.count > 12 {
-                        Text("Đang hiển thị 12/\(vm.openBrowserTabs.count) tab đầu tiên.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                    if matching.count > 12 {
+                        Button {
+                            vm.showAllTabs.toggle()
+                        } label: {
+                            Text(vm.showAllTabs ? "Thu gọn" : "Xem toàn bộ \(matching.count) tab")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(PulseTheme.cyan)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 2)
                     }
                 }
             }
         }
-        .padding(10)
-        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.blue.opacity(0.28), lineWidth: 1)
-        )
+        .telemetryCard(accent: PulseTheme.cyan, cornerRadius: 11, padding: 11)
     }
 }

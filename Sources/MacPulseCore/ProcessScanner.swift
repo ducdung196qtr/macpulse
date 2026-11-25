@@ -7,8 +7,16 @@ public enum ProcessScanner {
         let timestampNs: UInt64
     }
 
+    private struct CachedProcMeta {
+        let startSec: UInt64
+        let startUsec: UInt64
+        let comm: String
+        let args: String
+    }
+
     private static let sampleLock = NSLock()
     private static var previousCPUSamples: [Int32: CPUSample] = [:]
+    private static var cachedProcMeta: [Int32: CachedProcMeta] = [:]
     private static let timebaseInfo: mach_timebase_info_data_t = {
         var info = mach_timebase_info_data_t()
         mach_timebase_info(&info)
@@ -47,11 +55,14 @@ public enum ProcessScanner {
 
         var nextSamples: [Int32: CPUSample] = [:]
         nextSamples.reserveCapacity(pidCount)
+        var nextMeta: [Int32: CachedProcMeta] = [:]
+        nextMeta.reserveCapacity(pidCount)
         var results: [RawProcessInfo] = []
         results.reserveCapacity(pidCount)
 
         sampleLock.lock()
         let prevSamples = previousCPUSamples
+        let prevMeta = cachedProcMeta
         sampleLock.unlock()
 
         for i in 0..<pidCount {
@@ -64,8 +75,11 @@ public enum ProcessScanner {
 
             var bsdInfo = proc_bsdinfo()
             let bsdSize = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdInfo, Int32(MemoryLayout<proc_bsdinfo>.stride))
-            let ppid: Int32 = bsdSize == Int32(MemoryLayout<proc_bsdinfo>.stride) ? Int32(bsdInfo.pbi_ppid) : 0
-            let uid: UInt32 = bsdSize == Int32(MemoryLayout<proc_bsdinfo>.stride) ? bsdInfo.pbi_uid : 0
+            let hasBSD = (bsdSize == Int32(MemoryLayout<proc_bsdinfo>.stride))
+            let ppid: Int32 = hasBSD ? Int32(bsdInfo.pbi_ppid) : 0
+            let uid: UInt32 = hasBSD ? bsdInfo.pbi_uid : 0
+            let startSec: UInt64 = hasBSD ? bsdInfo.pbi_start_tvsec : 0
+            let startUsec: UInt64 = hasBSD ? bsdInfo.pbi_start_tvusec : 0
 
             let totalCPUNs = machTimeToNs(taskInfo.pti_total_user &+ taskInfo.pti_total_system)
             nextSamples[pid] = CPUSample(cpuNs: totalCPUNs, timestampNs: nowNs)
@@ -78,16 +92,26 @@ public enum ProcessScanner {
             }
 
             let rssBytes = taskInfo.pti_resident_size
-            let path = procPath(for: pid)
-            let procNameStr = procName(for: pid)
+            let comm: String
             let args: String
-            if uid == selfUID {
-                args = readProcArgs(for: pid) ?? (path.isEmpty ? procNameStr : path)
+            if let cached = prevMeta[pid], hasBSD, cached.startSec == startSec, cached.startUsec == startUsec {
+                comm = cached.comm
+                args = cached.args
+                nextMeta[pid] = cached
             } else {
-                args = path.isEmpty ? procNameStr : path
+                let path = procPath(for: pid)
+                let procNameStr = procName(for: pid)
+                if uid == selfUID {
+                    args = readProcArgs(for: pid) ?? (path.isEmpty ? procNameStr : path)
+                } else {
+                    args = path.isEmpty ? procNameStr : path
+                }
+                comm = procNameStr.isEmpty ? extractBinaryName(from: args) : procNameStr
+                if hasBSD {
+                    nextMeta[pid] = CachedProcMeta(startSec: startSec, startUsec: startUsec, comm: comm, args: args)
+                }
             }
 
-            let comm = procNameStr.isEmpty ? extractBinaryName(from: args) : procNameStr
             results.append(RawProcessInfo(
                 pid: pid,
                 ppid: ppid,
@@ -101,6 +125,7 @@ public enum ProcessScanner {
 
         sampleLock.lock()
         previousCPUSamples = nextSamples
+        cachedProcMeta = nextMeta
         sampleLock.unlock()
 
         return results
@@ -388,6 +413,22 @@ public enum ProcessScanner {
         return lower.contains("--type=renderer") || proc.comm.contains("Renderer")
     }
 
+    /// Strictly matches renderers of the user's normal GUI Chrome window,
+    /// NEVER headless automation/Playwright/Puppeteer/agent-browser renderers.
+    public static func isNormalChromeRendererProcess(_ proc: RawProcessInfo) -> Bool {
+        guard isChromeRendererProcess(proc) else { return false }
+        if isOrphanPuppeteerCommand(proc.args, comm: proc.comm) { return false }
+        let lower = proc.args.lowercased()
+        if lower.contains("agent-browser-profiles")
+            || lower.contains("playwright_chromiumdev_profile")
+            || lower.contains("puppeteer_dev_chrome_profile")
+            || lower.contains("--headless")
+            || lower.contains(".openmausbot/") {
+            return false
+        }
+        return true
+    }
+
     private static func extractBinaryName(from args: String) -> String {
         let beforeFlags = args.components(separatedBy: " --").first ?? args
         return URL(fileURLWithPath: beforeFlags.trimmingCharacters(in: .whitespaces)).lastPathComponent
@@ -399,12 +440,18 @@ public enum ProcessScanner {
         "Brave Browser": "com.brave.Browser",
         "Arc": "company.thebrowser.Browser",
         "Safari": "com.apple.Safari",
+        "Firefox": "org.mozilla.firefox",
+        "Antigravity": "com.google.antigravity",
+        "OpenMausBot": "com.openmausbot.app",
         "ChatGPT": "com.openai.chat",
         "Codex": "com.openai.codex",
         "Codex Computer Use": "com.openai.codex.computeruse",
+        "Claude": "com.anthropic.claudedesktop",
         "Slack": "com.tinyspeck.slackmacgap",
         "Loom": "com.loom.desktop",
         "Local": "com.getflywheel.lightning.local",
+        "Windows App": "com.microsoft.rdc.macos",
+        "Microsoft Remote Desktop": "com.microsoft.rdc.macos",
         "AnyDesk": "com.philandro.anydesk",
         "9Remote": "com.9remote.app",
         "Visual Studio Code": "com.microsoft.VSCode",
@@ -415,12 +462,15 @@ public enum ProcessScanner {
         "Telegram": "ru.keepcoder.Telegram",
         "Zalo": "com.vng.zalo",
         "Figma": "com.figma.Desktop",
+        "Docker": "com.docker.docker",
+        "TablePlus": "com.tinyapp.TablePlus",
+        "Postman": "com.postmanlabs.mac",
         "Xcode": "com.apple.dt.Xcode",
         "MacPulse": "com.ducdung.MacPulse"
     ]
 
     private static let remoteAppNames: Set<String> = [
-        "9Remote", "AnyDesk", "ChromeRemoteDesktopHost", "Chrome Remote Desktop", "TeamViewer", "RustDesk"
+        "9Remote", "AnyDesk", "ChromeRemoteDesktopHost", "Chrome Remote Desktop", "TeamViewer", "RustDesk", "Windows App", "Microsoft Remote Desktop"
     ]
 
     private static let protectedSystemAppNames: Set<String> = [
@@ -468,7 +518,7 @@ public enum ProcessScanner {
             if remoteAppNames.contains(appName) {
                 return ("remote:\(appName)", appName, bundle, .none)
             }
-            if appName == "Google Chrome" || appName == "Microsoft Edge" {
+            if appName == "Google Chrome" || appName == "Microsoft Edge" || appName == "Brave Browser" || appName == "Arc" || appName == "Safari" {
                 return ("app:\(appName)", appName, bundle, .inspectBrowserTabs)
             }
             if bundle != nil {
@@ -567,6 +617,26 @@ public enum ProcessScanner {
         }
 
         let lower = displayName.lowercased()
+        if lower.contains("antigravity") {
+            return ProcessGuidance(
+                safetyLevel: .cautionSaveFirst,
+                whatIsIt: "IDE & Trợ lý AI Google Antigravity.",
+                currentActivityHint: "Đang chạy giao diện IDE và language server AI (\(cpuText), \(ramText)\(procText)).",
+                impactIfClosed: "Đóng sẽ dừng phiên chat/agent đang chạy dở trong Antigravity. Code đã lưu trên ổ đĩa không bị mất.",
+                recommendedHowTo: "Chờ agent hoàn thành bước hiện tại rồi mới đóng nếu muốn giải phóng \(ramText) RAM."
+            )
+        }
+
+        if lower.contains("openmausbot") {
+            return ProcessGuidance(
+                safetyLevel: .cautionSaveFirst,
+                whatIsIt: "Ứng dụng điều phối Bot tự động OpenMausBot.",
+                currentActivityHint: "Đang chạy dịch vụ bot nền (\(cpuText), \(ramText)\(procText)).",
+                impactIfClosed: "Đóng sẽ tạm dừng toàn bộ các nhiệm vụ bot đang tự động chạy và ngăn bot gọi lại headless Chrome.",
+                recommendedHowTo: "Nếu bot đang lặp vô hạn hoặc chưa cần chạy, bấm \"Đóng\" để giải phóng tài nguyên."
+            )
+        }
+
         if lower.contains("chatgpt") || lower.contains("codex") {
             let stateHint: String
             if cpuPercent >= 25.0 {

@@ -42,7 +42,29 @@ public final class BenchmarkRunner {
         }
     }
 
-    public func runSync(localURLToProbe: URL? = URL(string: "http://alonepro.local/"), onProgress: ((String) -> Void)? = nil) throws -> BenchmarkResult {
+    public static func discoverLocalWPSites(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> [String] {
+        let localSitesURL = homeDirectory.appendingPathComponent("Local Sites")
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: localSitesURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .map(\.lastPathComponent)
+            .sorted()
+    }
+
+    public static func compositeScore(for result: BenchmarkResult) -> Int {
+        let singlePart = min(1.0, result.cpuSingleOpsPerSec / 700_000_000.0) * 25.0
+        let multiPart = min(1.0, result.cpuMultiOpsPerSec / 3_200_000_000.0) * 25.0
+        let memPart = min(1.0, result.memoryBandwidthGBs / 65.0) * 25.0
+        let diskAvg = (result.diskWriteMBs + result.diskReadMBs) / 2.0
+        let diskPart = min(1.0, diskAvg / 1500.0) * 25.0
+        return max(1, min(100, Int((singlePart + multiPart + memPart + diskPart).rounded())))
+    }
+
+    public func runSync(localURLToProbe: URL? = nil, onProgress: ((String) -> Void)? = nil) throws -> BenchmarkResult {
         let overallStart = ContinuousClock.now
 
         onProgress?("Đang đo CPU đơn nhân...")
@@ -207,12 +229,14 @@ public final class BenchmarkRunner {
         var statusCode: Int?
 
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 3.0
-        config.timeoutIntervalForResource = 3.0
+        config.timeoutIntervalForRequest = 1.5
+        config.timeoutIntervalForResource = 1.5
         let session = URLSession(configuration: config)
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1.5)
+        req.httpMethod = "HEAD"
         let t0 = CFAbsoluteTimeGetCurrent()
 
-        session.dataTask(with: url) { _, resp, err in
+        session.dataTask(with: req) { _, resp, err in
             if err == nil, let http = resp as? HTTPURLResponse {
                 latencyMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0
                 statusCode = http.statusCode
@@ -220,7 +244,7 @@ public final class BenchmarkRunner {
             sem.signal()
         }.resume()
 
-        _ = sem.wait(timeout: .now() + 3.2)
+        _ = sem.wait(timeout: .now() + 1.7)
         session.invalidateAndCancel()
         return (latencyMs, statusCode)
     }

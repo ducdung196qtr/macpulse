@@ -63,13 +63,22 @@ public final class CleanupScanner {
             ),
             (
                 "cache-gemini-ai",
-                "Tệp tạm Gemini CLI / Antigravity",
-                "Log phiên chạy, cache npm tool sandbox và các tệp scratch tạm thời của Gemini/Antigravity.",
+                "Cache & Bản cập nhật Antigravity / Gemini",
+                "Cache cập nhật ShipIt, bộ đệm ứng dụng Antigravity, log phiên và sandbox npm tạm (không mất lịch sử chat hay settings).",
                 [
+                    "Library/Caches/com.google.antigravity.ShipIt",
+                    "Library/Caches/com.google.antigravity",
                     ".gemini/logs",
                     ".cache/opencode-antigravity-npm",
                     ".cache/opencode"
                 ],
+                true
+            ),
+            (
+                "cache-openmausbot-ai",
+                "Cache & Bản cập nhật OpenMausBot",
+                "File cập nhật tải về và bộ đệm GPU/Shader/Web tạm của profile bot (giữ nguyên 100% đăng nhập, cookie và lịch sử bot).",
+                Self.openMausBotSafeCacheRelativePaths(homeDirectory: homeDirectory),
                 true
             ),
             (
@@ -88,9 +97,11 @@ public final class CleanupScanner {
         // 2. Cache Trình duyệt Web
         let browserSpecs: [(id: String, title: String, subtitle: String, relPaths: [String], defaultChecked: Bool)] = [
             ("cache-chrome", "Cache Web Google Chrome", "Chỉ xoá bộ đệm web tạm (~/Library/Caches). 100% an toàn: bảo vệ tuyệt đối Extension, Service Worker, tab và tài khoản.", chromePaths, true),
+            ("cache-brave", "Cache Brave Browser", "Chỉ xoá file đệm web tạm của Brave; giữ nguyên 100% Extension, tab và mật khẩu.", ["Library/Caches/BraveSoftware"], true),
             ("cache-edge", "Cache Microsoft Edge", "Chỉ xoá file đệm tạm của Edge; giữ nguyên đăng nhập.", ["Library/Caches/Microsoft Edge"], true),
             ("cache-safari", "Cache Safari", "Chỉ xoá file đệm trình duyệt Safari; không mất bookmark/lịch sử.", ["Library/Caches/com.apple.Safari"], true),
-            ("cache-arc", "Cache Arc Browser", "Xoá file đệm web & shader của Arc Browser; giữ nguyên tab và Space.", ["Library/Caches/company.thebrowser.Browser"], true)
+            ("cache-arc", "Cache Arc Browser", "Xoá file đệm web & shader của Arc Browser; giữ nguyên tab và Space.", ["Library/Caches/company.thebrowser.Browser"], true),
+            ("cache-firefox", "Cache Mozilla Firefox", "Xoá file đệm web tạm của Firefox; giữ nguyên add-on và tài khoản.", ["Library/Caches/Firefox"], true)
         ]
 
         // 3. Cache Lập trình & Build
@@ -99,6 +110,7 @@ public final class CleanupScanner {
             ("cache-homebrew", "Cache Homebrew Cask & Downloads", "Tệp nén .bottle và installer đã tải về của brew; brew tự tải lại khi cần.", ["Library/Caches/Homebrew"], true),
             ("cache-npm", "Cache npm (_cacache)", "Gói tải tạm của npm — tự tải lại nếu chạy npm install.", [".npm/_cacache"], true),
             ("cache-uv-pip", "Cache Python uv / pip", "Gói tải tạm của uv và pip.", [".cache/uv", ".cache/pip", "Library/Caches/pip"], true),
+            ("cache-composer", "Cache PHP Composer", "Gói tải tạm của Composer; tự tải lại khi chạy composer install.", ["Library/Caches/composer"], true),
             ("cache-swiftpm", "Cache Swift Package Manager", "Cache source/manifest của SwiftPM; Xcode/Swift tự tải lại khi build.", ["Library/Caches/org.swift.swiftpm"], true),
             ("cache-xcode-derived", "Xcode DerivedData (Build trung gian)", "Xoá tệp build tạm của Xcode/Swift để giải phóng ổ cứng (Xcode tự build lại khi nhấn Run).", ["Library/Developer/Xcode/DerivedData"], false),
             ("cache-yarn-pnpm", "Cache Yarn / pnpm", "Gói tải tạm của Yarn / pnpm.", ["Library/Caches/Yarn", ".cache/yarn", "Library/pnpm/store"], false),
@@ -197,7 +209,8 @@ public final class CleanupScanner {
             ("inspect-opencode-db", "OpenCode Database (opencode.db)", "Dữ liệu lịch sử phiên OpenCode trên ổ cứng — KHÔNG tự xoá. Bấm Mở Finder nếu muốn tự dọn/backup.", ".local/share/opencode/opencode.db"),
             ("inspect-codex-runtimes", "Codex Runtimes (~/.cache/codex-runtimes)", "Bộ chạy nền Codex Desktop trên SSD — chỉ mở Finder xem, xoá sẽ phải tải lại khi mở Codex.", ".cache/codex-runtimes"),
             ("inspect-puppeteer-browsers", "Trình duyệt Puppeteer (~/.cache/puppeteer)", "Bộ Chromium tải sẵn cho automation/MCP — mở Finder xem nếu muốn dọn bản cũ.", ".cache/puppeteer"),
-            ("inspect-xcode-derived", "Xcode DerivedData", "Dữ liệu build trung gian của Xcode/Swift trên SSD — mở Finder kiểm tra nếu không cần giữ cache build.", "Library/Developer/Xcode/DerivedData"),
+            ("inspect-playwright-browsers", "Trình duyệt Playwright (ms-playwright)", "Các bản Chromium/WebKit tải sẵn cho Playwright — chỉ xem Finder nếu muốn dọn bản cũ.", "Library/Caches/ms-playwright"),
+            ("inspect-antigravity-brain", "Dữ liệu phiên Antigravity (~/.gemini/antigravity/brain)", "Lịch sử hội thoại, ảnh chụp & log phiên AI — KHÔNG tự xoá, mở Finder nếu muốn dọn phiên cũ.", ".gemini/antigravity/brain")
         ]
 
         for spec in inspectSpecs {
@@ -221,6 +234,29 @@ public final class CleanupScanner {
         }
 
         return results.sorted { $0.sizeBytes > $1.sizeBytes }
+    }
+
+    public static func openMausBotSafeCacheRelativePaths(homeDirectory: URL) -> [String] {
+        var paths = ["Library/Caches/openmausbot-updater"]
+        let profilesBase = homeDirectory.appendingPathComponent(".openmausbot/agent-browser-profiles")
+        let fm = FileManager.default
+        if let subs = try? fm.contentsOfDirectory(at: profilesBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            let safeCacheSubdirs = [
+                "Default/Cache",
+                "Default/Code Cache",
+                "GPUPersistentCache",
+                "GraphiteDawnCache",
+                "component_crx_cache",
+                "extensions_crx_cache"
+            ]
+            for sub in subs {
+                let profileName = sub.lastPathComponent
+                for rel in safeCacheSubdirs {
+                    paths.append(".openmausbot/agent-browser-profiles/\(profileName)/\(rel)")
+                }
+            }
+        }
+        return paths
     }
 
 

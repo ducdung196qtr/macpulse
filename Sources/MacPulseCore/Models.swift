@@ -39,6 +39,49 @@ public struct CPUMetrics: Sendable, Equatable {
     }
 }
 
+public enum ThermalLevel: String, Sendable, Equatable {
+    case nominal
+    case fair
+    case serious
+    case critical
+
+    public var label: String {
+        switch self {
+        case .nominal: return "Mát mẻ"
+        case .fair: return "Hơi ấm"
+        case .serious: return "Nóng"
+        case .critical: return "Quá nhiệt"
+        }
+    }
+}
+
+public struct HardwareSpecs: Sendable, Equatable {
+    public let modelName: String
+    public let cpuBrand: String
+    public let coreCount: Int
+    public let totalRAMBytes: UInt64
+    public let totalDiskBytes: UInt64
+
+    public var totalRAMGB: Int { Int((Double(totalRAMBytes) / 1_073_741_824.0).rounded()) }
+    public var totalDiskGB: Int { Int((Double(totalDiskBytes) / 1_000_000_000.0).rounded()) }
+
+    public var compactBadge: String {
+        let shortChip = cpuBrand
+            .replacingOccurrences(of: "Apple ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let chipPart = shortChip.isEmpty ? modelName : shortChip
+        return "\(chipPart) • \(coreCount)C • \(totalRAMGB)G"
+    }
+
+    public init(modelName: String, cpuBrand: String, coreCount: Int, totalRAMBytes: UInt64, totalDiskBytes: UInt64) {
+        self.modelName = modelName
+        self.cpuBrand = cpuBrand
+        self.coreCount = coreCount
+        self.totalRAMBytes = totalRAMBytes
+        self.totalDiskBytes = totalDiskBytes
+    }
+}
+
 public struct MemoryMetrics: Sendable, Equatable {
     public let totalBytes: UInt64
     public let activeBytes: UInt64
@@ -47,6 +90,8 @@ public struct MemoryMetrics: Sendable, Equatable {
     public let compressedBytes: UInt64
     public let freeBytes: UInt64
     public let purgeableBytes: UInt64
+    public let appMemoryBytes: UInt64
+    public let cachedFilesBytes: UInt64
     public let swapTotalBytes: UInt64
     public let swapUsedBytes: UInt64
     public let swapins: UInt64
@@ -55,7 +100,13 @@ public struct MemoryMetrics: Sendable, Equatable {
     public var compressedGB: Double { Double(compressedBytes) / 1_073_741_824.0 }
     public var freeGB: Double { Double(freeBytes) / 1_073_741_824.0 }
     public var swapUsedGB: Double { Double(swapUsedBytes) / 1_073_741_824.0 }
-    public var usedBytes: UInt64 { activeBytes + wiredBytes + compressedBytes }
+    public var wiredGB: Double { Double(wiredBytes) / 1_073_741_824.0 }
+    public var cachedGB: Double { Double(cachedFilesBytes) / 1_073_741_824.0 }
+    public var effectiveAppMemoryBytes: UInt64 {
+        appMemoryBytes > 0 ? appMemoryBytes : activeBytes
+    }
+    public var appMemoryGB: Double { Double(effectiveAppMemoryBytes) / 1_073_741_824.0 }
+    public var usedBytes: UInt64 { effectiveAppMemoryBytes + wiredBytes + compressedBytes }
     public var availableBytes: UInt64 { totalBytes >= usedBytes ? totalBytes - usedBytes : freeBytes }
     public var availableGB: Double { Double(availableBytes) / 1_073_741_824.0 }
     public var totalGB: Double { Double(totalBytes) / 1_073_741_824.0 }
@@ -65,7 +116,21 @@ public struct MemoryMetrics: Sendable, Equatable {
     }
     public var isCompressorHeavy: Bool { compressedGB >= 4.5 }
 
-    public init(totalBytes: UInt64, activeBytes: UInt64, inactiveBytes: UInt64, wiredBytes: UInt64, compressedBytes: UInt64, freeBytes: UInt64, purgeableBytes: UInt64, swapTotalBytes: UInt64, swapUsedBytes: UInt64, swapins: UInt64, swapouts: UInt64) {
+    public init(
+        totalBytes: UInt64,
+        activeBytes: UInt64,
+        inactiveBytes: UInt64,
+        wiredBytes: UInt64,
+        compressedBytes: UInt64,
+        freeBytes: UInt64,
+        purgeableBytes: UInt64,
+        appMemoryBytes: UInt64 = 0,
+        cachedFilesBytes: UInt64 = 0,
+        swapTotalBytes: UInt64,
+        swapUsedBytes: UInt64,
+        swapins: UInt64,
+        swapouts: UInt64
+    ) {
         self.totalBytes = totalBytes
         self.activeBytes = activeBytes
         self.inactiveBytes = inactiveBytes
@@ -73,6 +138,8 @@ public struct MemoryMetrics: Sendable, Equatable {
         self.compressedBytes = compressedBytes
         self.freeBytes = freeBytes
         self.purgeableBytes = purgeableBytes
+        self.appMemoryBytes = appMemoryBytes
+        self.cachedFilesBytes = cachedFilesBytes
         self.swapTotalBytes = swapTotalBytes
         self.swapUsedBytes = swapUsedBytes
         self.swapins = swapins
@@ -104,13 +171,41 @@ public struct SystemSnapshot: Sendable, Equatable {
     public let cpu: CPUMetrics
     public let memory: MemoryMetrics
     public let disk: DiskMetrics
+    public let thermalLevel: ThermalLevel
+    public let uptimeSeconds: TimeInterval
 
-    public init(timestamp: Date = Date(), cpu: CPUMetrics, memory: MemoryMetrics, disk: DiskMetrics) {
+    public var formattedUptime: String {
+        let total = max(0, Int(uptimeSeconds))
+        let days = total / 86400
+        let hours = (total % 86400) / 3600
+        let mins = (total % 3600) / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(mins)m" }
+        return "\(mins)m"
+    }
+
+    public init(
+        timestamp: Date = Date(),
+        cpu: CPUMetrics,
+        memory: MemoryMetrics,
+        disk: DiskMetrics,
+        thermalLevel: ThermalLevel = .nominal,
+        uptimeSeconds: TimeInterval = 0
+    ) {
         self.timestamp = timestamp
         self.cpu = cpu
         self.memory = memory
         self.disk = disk
+        self.thermalLevel = thermalLevel
+        self.uptimeSeconds = uptimeSeconds
     }
+}
+
+public enum ProcessSortOrder: String, CaseIterable, Identifiable, Sendable {
+    case smart = "Thông minh"
+    case cpu = "CPU cao"
+    case ram = "RAM lớn"
+    public var id: String { rawValue }
 }
 
 public struct RawProcessInfo: Sendable, Equatable, Identifiable {
@@ -137,6 +232,7 @@ public struct RawProcessInfo: Sendable, Equatable, Identifiable {
 public enum ProcessActionKind: String, Sendable, Equatable {
     case none
     case killOrphanPuppeteer
+    case killStuckChromeRenderers
     case quitAppGracefully
     case terminateUserProcess
     case inspectBrowserTabs

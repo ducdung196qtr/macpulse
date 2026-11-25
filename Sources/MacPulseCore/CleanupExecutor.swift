@@ -76,12 +76,26 @@ public enum CleanupExecutor {
                     let before = CleanupScanner.directorySize(at: dirURL)
                     do {
                         let children = try fm.contentsOfDirectory(at: dirURL, includingPropertiesForKeys: nil, options: [])
+                        var removedAny = false
+                        var childFailCount = 0
+                        var lastChildError: String?
                         for child in children {
-                            try fm.removeItem(at: child)
+                            do {
+                                try fm.removeItem(at: child)
+                                removedAny = true
+                            } catch {
+                                childFailCount += 1
+                                lastChildError = error.localizedDescription
+                            }
                         }
                         let after = CleanupScanner.directorySize(at: dirURL)
                         freed += before >= after ? before - after : 0
-                        count += 1
+                        if removedAny || children.isEmpty {
+                            count += 1
+                        }
+                        if childFailCount > 0 && !removedAny, let errDesc = lastChildError {
+                            errors.append("\(item.title): \(errDesc)")
+                        }
                     } catch {
                         errors.append("\(item.title): \(error.localizedDescription)")
                     }
@@ -273,8 +287,8 @@ public enum CleanupExecutor {
             try? tellQuit.run()
             tellQuit.waitUntilExit()
 
-            // 2. Wait up to 1.2s for clean exit
-            for _ in 0..<8 {
+            // 2. Wait up to 2.4s for clean exit so Chrome flushes all open tabs & extension state
+            for _ in 0..<16 {
                 if let live = try? ProcessScanner.scanLiveProcesses(),
                    !live.contains(where: { ProcessScanner.isAnyGoogleChromeProcess($0) }) {
                     break
@@ -323,7 +337,7 @@ public enum CleanupExecutor {
             do {
                 let children = try fm.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil, options: [])
                 for child in children {
-                    try fm.removeItem(at: child)
+                    try? fm.removeItem(at: child)
                 }
                 let after = CleanupScanner.directorySize(at: cacheURL)
                 freed += before >= after ? before - after : 0
@@ -392,12 +406,12 @@ public enum CleanupExecutor {
         return (killed, failed)
     }
 
-    /// Kills stuck Chrome helper renderers (tabs pegged on high CPU or hung during local dev tasks)
-    /// without closing the Chrome app, preserving other windows, tabs, DevTools, and extensions.
+    /// Kills stuck normal Chrome helper renderers (tabs pegged on high CPU or hung during local dev tasks)
+    /// without closing the Chrome app or touching headless automation bots, preserving other windows, tabs, DevTools, and extensions.
     public static func killStuckChromeRenderers(minCPUPercent: Double = 12.0, forceAllRenderers: Bool = false) -> (killedPIDs: [Int32], totalCPUFreed: Double) {
         guard let live = try? ProcessScanner.scanLiveProcesses() else { return ([], 0) }
         let targetRenderers = live.filter { proc in
-            guard ProcessScanner.isChromeRendererProcess(proc) else { return false }
+            guard ProcessScanner.isNormalChromeRendererProcess(proc) else { return false }
             if forceAllRenderers { return true }
             return proc.cpuPercent >= minCPUPercent
         }

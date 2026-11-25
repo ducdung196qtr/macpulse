@@ -730,8 +730,8 @@ suite.test("AITokenMonitor: detects local AI platforms and calculates token metr
     try expect(antigravity != nil, "Antigravity provider must be present")
     if let agy = antigravity, agy.isDetected {
         try expect(agy.totalTokensToday >= 0, "Total tokens must be non-negative")
-        try expect(agy.fiveHourQuota != nil, "Antigravity must have five-hour quota")
-        try expect(agy.weeklyQuota != nil, "Antigravity must have weekly quota")
+        try expect(agy.fiveHourQuota != nil, "Antigravity must have five-hour quota when daemon is live")
+        try expect(!agy.quotaPools.isEmpty, "Antigravity must parse real multi-model quota pools")
     }
     let chatgpt = snap.providers.first { $0.providerType == .openaiCodex }
     try expect(chatgpt != nil, "ChatGPT provider must be present")
@@ -1019,6 +1019,204 @@ suite.test("CleanupExecutor discovers and cleans automation lock files without t
     try expect(report.removedLockFiles.contains("DevToolsActivePort"), "DevToolsActivePort should be removed")
     try expect(!fm.fileExists(atPath: lock1.path), "Lock 1 should not exist on disk")
     try expect(!fm.fileExists(atPath: lock2.path), "Lock 2 should not exist on disk")
+}
+
+suite.test("v2.0: AITokenMonitor separates Today, 5h, and 7d tokens accurately across multi-day transcripts") {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseAITokTest-\(UUID().uuidString)")
+    let fm = FileManager.default
+    defer { try? fm.removeItem(at: tmp) }
+
+    let now = Date()
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime]
+
+    let t1 = iso.string(from: now.addingTimeInterval(-600))        // 10 mins ago (Today + 5h + 7d)
+    let t2 = iso.string(from: now.addingTimeInterval(-2 * 86400))  // 2 days ago (7d only, NOT Today, NOT 5h)
+    let t3 = iso.string(from: now.addingTimeInterval(-10 * 86400)) // 10 days ago (Outside 7d)
+
+    let logDir = tmp.appendingPathComponent("brain/conv-1/.system_generated/logs")
+    try fm.createDirectory(at: logDir, withIntermediateDirectories: true)
+    let lines = [
+        "{\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"\(t1)\",\"input_tokens\":1000,\"output_tokens\":200,\"cache_read_tokens\":300}",
+        "{\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"\(t2)\",\"input_tokens\":4000,\"output_tokens\":500,\"cache_read_tokens\":0}",
+        "{\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"\(t3)\",\"input_tokens\":9000,\"output_tokens\":1000,\"cache_read_tokens\":0}"
+    ].joined(separator: "\n")
+    try lines.write(to: logDir.appendingPathComponent("transcript.jsonl"), atomically: true, encoding: .utf8)
+
+    let usage = AITokenMonitor.scanAntigravityTranscriptTokens(agyDir: tmp.path, now: now)
+    try expectEqual(usage.totalToday, 1500)
+    try expectEqual(usage.tokens5H, 1500)
+    try expectEqual(usage.tokens7D, 6000)
+    try expectEqual(usage.turnsToday, 1)
+    try expectEqual(usage.sessionsToday, 1)
+}
+
+suite.test("v2.0: AITokenMonitor never fabricates fake 20% weekly quota when ChatGPT is offline without cache") {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseChatGPTOffline-\(UUID().uuidString)")
+    let fm = FileManager.default
+    defer { try? fm.removeItem(at: tmp) }
+
+    let codexDir = tmp.appendingPathComponent(".codex")
+    try fm.createDirectory(at: codexDir, withIntermediateDirectories: true)
+    // No auth.json -> offline with empty isolated cache
+    let monitor = AITokenMonitor(cacheFileURL: tmp.appendingPathComponent("cache.json"))
+    let metrics = monitor.scanOpenAICodex(home: tmp.path, today: "2026-11-25")
+    try expect(metrics.isDetected, "Should detect .codex directory")
+    try expectEqual(metrics.sourceState, .offline)
+    try expect(metrics.fiveHourQuota == nil, "Must not fabricate fake 5h quota when offline without cache")
+    try expect(metrics.weeklyQuota == nil, "Must not fabricate fake 20% weekly quota when offline without cache")
+}
+
+suite.test("v2.0: CleanupScanner detects Brave, Antigravity ShipIt, OpenMausBot caches and has zero duplicate Xcode entries") {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseCleanV2-\(UUID().uuidString)")
+    let fm = FileManager.default
+    defer { try? fm.removeItem(at: tmp) }
+
+    let payload = Data(repeating: 0x55, count: 120_000)
+    let dirs = [
+        "Library/Caches/BraveSoftware",
+        "Library/Caches/Firefox",
+        "Library/Caches/com.google.antigravity.ShipIt",
+        "Library/Caches/openmausbot-updater",
+        ".openmausbot/agent-browser-profiles/abc123/Default/Cache",
+        "Library/Developer/Xcode/DerivedData"
+    ]
+    for rel in dirs {
+        let u = tmp.appendingPathComponent(rel)
+        try fm.createDirectory(at: u, withIntermediateDirectories: true)
+        try payload.write(to: u.appendingPathComponent("data.bin"))
+    }
+    // Also place a protected Cookies file inside bot profile that must NOT be cleaned
+    let cookiesURL = tmp.appendingPathComponent(".openmausbot/agent-browser-profiles/abc123/Default/Cookies")
+    try payload.write(to: cookiesURL)
+
+    let scanner = CleanupScanner(homeDirectory: tmp, oversizedLogThresholdBytes: 1024, inspectThresholdBytes: 50_000)
+    let found = scanner.scan()
+    let ids = Set(found.map(\.id))
+
+    try expect(ids.contains("cache-brave"), "Should detect Brave Browser cache")
+    try expect(ids.contains("cache-firefox"), "Should detect Firefox cache")
+    try expect(ids.contains("cache-gemini-ai"), "Should detect Antigravity ShipIt cache")
+    try expect(ids.contains("cache-openmausbot-ai"), "Should detect OpenMausBot updater & profile cache")
+    try expect(ids.contains("cache-xcode-derived"), "Should detect Xcode DerivedData in dev section")
+    try expect(!ids.contains("inspect-xcode-derived"), "Must NOT duplicate Xcode DerivedData in inspect section")
+
+    // Execute cleanup on OpenMausBot candidate and verify Cookies file is 100% untouched
+    if let omb = found.first(where: { $0.id == "cache-openmausbot-ai" }) {
+        let outcome = CleanupExecutor.execute(candidates: [omb], homeDirectory: tmp)
+        try expect(outcome.freedBytes > 0, "Should free OpenMausBot cache bytes")
+        try expect(fm.fileExists(atPath: cookiesURL.path), "Bot profile Cookies file must NEVER be deleted")
+    }
+}
+
+suite.test("v2.0: ProcessScanner.isNormalChromeRendererProcess isolates GUI Chrome from headless automation") {
+    let normalRenderer = RawProcessInfo(
+        pid: 1001, ppid: 1000, cpuPercent: 55.0, rssBytes: 200_000_000, elapsed: "01:00",
+        comm: "Google Chrome Helper (Renderer)",
+        args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer"
+    )
+    let headlessRenderer = RawProcessInfo(
+        pid: 2001, ppid: 2000, cpuPercent: 65.0, rssBytes: 200_000_000, elapsed: "01:00",
+        comm: "Google Chrome Helper (Aperitif Renderer)",
+        args: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Aperitif Renderer).app/Contents/MacOS/Google Chrome Helper (Aperitif Renderer) --type=renderer --user-data-dir=/Users/ducdung/.openmausbot/agent-browser-profiles/c7bafa6b"
+    )
+
+    try expect(ProcessScanner.isNormalChromeRendererProcess(normalRenderer), "Normal GUI Chrome renderer must match")
+    try expect(!ProcessScanner.isNormalChromeRendererProcess(headlessRenderer), "Headless automation renderer must NOT match normal Chrome renderer killer")
+}
+
+suite.test("v2.0: BrowserTabInspector.sortForSafeBatchClosing prevents index shifting") {
+    let tabs = [
+        BrowserTabItem(browser: "Google Chrome", windowIndex: 1, tabIndex: 2, title: "A", url: "https://a.com"),
+        BrowserTabItem(browser: "Google Chrome", windowIndex: 1, tabIndex: 5, title: "B", url: "https://b.com"),
+        BrowserTabItem(browser: "Google Chrome", windowIndex: 2, tabIndex: 1, title: "C", url: "https://c.com"),
+        BrowserTabItem(browser: "Brave Browser", windowIndex: 1, tabIndex: 3, title: "D", url: "https://d.com")
+    ]
+    let sorted = BrowserTabInspector.sortForSafeBatchClosing(tabs)
+    try expectEqual(sorted[0].browser, "Brave Browser")
+    try expectEqual(sorted[1].windowIndex, 2)
+    try expectEqual(sorted[2].windowIndex, 1)
+    try expectEqual(sorted[2].tabIndex, 5)
+    try expectEqual(sorted[3].tabIndex, 2)
+}
+
+suite.test("v2.0: BenchmarkRunner saves exactly 1 history entry per run and calculates composite score") {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseBenchV2-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let runner = BenchmarkRunner(historyFileURL: tmp, diskTestBytes: 4 * 1_048_576)
+    let res = try runner.runSync(localURLToProbe: nil)
+    let history = runner.loadHistory()
+    try expectEqual(history.count, 1)
+    let score = BenchmarkRunner.compositeScore(for: res)
+    try expect(score >= 1 && score <= 100, "Composite score should be between 1 and 100")
+}
+
+suite.test("v2.0: HealthAnalyzer detects stuck Chrome renderers and thermal pressure") {
+    let snap = SystemSnapshot(
+        cpu: CPUMetrics(userPercent: 30, systemPercent: 10, idlePercent: 60, coreCount: 8, load1m: 2.0, load5m: 2.0, load15m: 2.0),
+        memory: MemoryMetrics(
+            totalBytes: 16 * 1_073_741_824, activeBytes: 4 * 1_073_741_824, inactiveBytes: 2 * 1_073_741_824,
+            wiredBytes: 2 * 1_073_741_824, compressedBytes: 1 * 1_073_741_824, freeBytes: 7 * 1_073_741_824,
+            purgeableBytes: 0, appMemoryBytes: 3 * 1_073_741_824, cachedFilesBytes: 2 * 1_073_741_824,
+            swapTotalBytes: 0, swapUsedBytes: 0, swapins: 0, swapouts: 0
+        ),
+        disk: DiskMetrics(totalBytes: 250_000_000_000, availableBytes: 80_000_000_000, usedBytes: 170_000_000_000),
+        thermalLevel: .serious,
+        uptimeSeconds: 7200
+    )
+    let report = HealthAnalyzer.analyze(snapshot: snap, processGroups: [], stuckChromeRendererCount: 2, stuckChromeRendererCPU: 45.0)
+    try expect(report.findings.contains { $0.id == "thermal-pressure" }, "Should flag thermal pressure")
+    try expect(report.findings.contains { $0.id == "stuck-chrome-renderers" && $0.recommendedAction == .killStuckChromeRenderers }, "Should flag stuck Chrome renderers with 1-click action")
+    try expectEqual(snap.memory.usedBytes, 6 * 1_073_741_824) // appMemory(3G) + wired(2G) + compressed(1G)
+}
+
+suite.test("v2.0: VietnameseSettings quickTelex default consistency and precise Windows App detection") {
+    let emptyJSON = Data("{}".utf8)
+    let decoded = try JSONDecoder().decode(VietnameseSettings.self, from: emptyJSON)
+    try expectEqual(decoded.quickTelex, VietnameseSettings().quickTelex)
+    try expectEqual(decoded.quickTelex, false)
+
+    try expect(VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.microsoft.rdc.macos", appName: "Windows App"), "Windows App must be detected")
+    try expect(!VietnameseAppDetector.isVPSOrRemoteApp(bundleID: "com.example.windowmanager", appName: "My Windows Manager"), "Generic app containing word 'windows' must NOT be misclassified as VPS")
+}
+
+suite.test("v2.0: SystemTelemetry HardwareSpecs reports valid hardware metrics") {
+    let specs = SystemTelemetryReader.getHardwareSpecs()
+    try expect(specs.coreCount >= 1, "Core count should be >= 1")
+    try expect(specs.totalRAMGB >= 4, "Total RAM GB should be >= 4")
+    try expect(!specs.compactBadge.isEmpty, "Compact badge should not be empty")
+}
+
+suite.test("v2.0: Antigravity GetUserStatus parser separates Gemini and Claude/GPT-OSS quota pools + credits") {
+    let mockJSON = """
+    {
+      "userStatus": {
+        "name": "Duc Dung",
+        "email": "test@example.com",
+        "userTier": { "name": "Google AI Ultra" },
+        "planStatus": { "availablePromptCredits": 500, "availableFlowCredits": 100 },
+        "cascadeModelConfigData": {
+          "clientModelConfigs": [
+            { "label": "Gemini 4 Neon (High)", "quotaInfo": { "remainingFraction": 0.85, "resetTime": "2026-11-25T10:23:02Z" } },
+            { "label": "Gemini 3.8 Flash (High)", "quotaInfo": { "remainingFraction": 0.90, "resetTime": "2026-11-25T10:23:02Z" } },
+            { "label": "Claude Sonnet 4.6 (Thinking)", "quotaInfo": { "remainingFraction": 1.0, "resetTime": "2026-11-25T11:08:51Z" } },
+            { "label": "GPT-OSS 120B (Medium)", "quotaInfo": { "remainingFraction": 0.95, "resetTime": "2026-11-25T11:08:51Z" } }
+          ]
+        }
+      }
+    }
+    """
+    let parsed = AITokenMonitor.parseAntigravityUserStatus(data: Data(mockJSON.utf8))
+    try expect(parsed != nil, "Should parse GetUserStatus JSON")
+    try expectEqual(parsed?.planTier, "Google AI Ultra")
+    try expectEqual(parsed?.promptCreditsAvailable, 500)
+    try expectEqual(parsed?.flowCreditsAvailable, 100)
+    try expectEqual(parsed?.quotaPools.count, 2)
+    try expectEqual(parsed?.quotaPools[0].id, "agy-gemini")
+    try expectEqual(Int((parsed?.quotaPools[0].quota.remainingPercent ?? 0).rounded()), 85)
+    try expectEqual(parsed?.quotaPools[1].id, "agy-partner")
+    try expectEqual(Int((parsed?.quotaPools[1].quota.remainingPercent ?? 0).rounded()), 95)
 }
 
 suite.summaryAndExit()
