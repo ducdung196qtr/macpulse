@@ -30,7 +30,7 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
         }
 
         if config.showFloatingBanner {
-            showFloatingHudToast(for: event)
+            showFloatingHudToast(for: event, avoidTopRightOverlap: config.showSystemNotification)
         }
 
         if config.showSystemNotification {
@@ -71,7 +71,7 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     // MARK: - Floating Non-Activating Sci-Fi HUD Toast
-    private func showFloatingHudToast(for event: OpenCodeCompletionEvent) {
+    private func showFloatingHudToast(for event: OpenCodeCompletionEvent, avoidTopRightOverlap: Bool) {
         autoDismissWorkItem?.cancel()
 
         let contentView = OpenCodeFloatingToastView(
@@ -86,8 +86,8 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
         )
 
         let hosting = NSHostingView(rootView: contentView)
-        let width: CGFloat = 356
-        let height: CGFloat = 94
+        let width: CGFloat = 364
+        let height: CGFloat = 96
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
 
         let panel: NSPanel
@@ -102,7 +102,7 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
                 defer: false
             )
             created.isFloatingPanel = true
-            created.level = .floating
+            created.level = .statusBar
             created.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
             created.isOpaque = false
             created.backgroundColor = .clear
@@ -116,9 +116,12 @@ final class OpenCodeAlertManager: NSObject, UNUserNotificationCenterDelegate {
 
         if let screen = NSScreen.main ?? NSScreen.screens.first {
             let vf = screen.visibleFrame
+            let yPos: CGFloat = avoidTopRightOverlap
+                ? (vf.minY + 18)              // Bottom-right when macOS Notification Center is also enabled
+                : (vf.maxY - height - 16)     // Top-right when HUD toast is the primary banner
             let origin = NSPoint(
                 x: vf.maxX - width - 16,
-                y: vf.maxY - height - 16
+                y: yPos
             )
             panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
         }
@@ -262,7 +265,7 @@ private struct OpenCodeFloatingToastView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(width: 356, height: 94)
+        .frame(width: 364, height: 96)
         .background(
             ChamferedRect(cut: 10, cornerRadius: 5)
                 .fill(HudTheme.bgMid.opacity(0.97))

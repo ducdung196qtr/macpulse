@@ -134,7 +134,7 @@ public struct OpenCodeNotifyConfig: Codable, Sendable, Equatable {
         playSound: Bool = true,
         soundName: String = "Glass",
         showFloatingBanner: Bool = true,
-        showSystemNotification: Bool = true,
+        showSystemNotification: Bool = false,
         onlyTopLevelSessions: Bool = true,
         ignoreEmptyBotSessions: Bool = true,
         minDurationSeconds: Int = 3
