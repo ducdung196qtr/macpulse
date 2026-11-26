@@ -732,15 +732,17 @@ suite.test("IME 40: Stability of coongj -> cộng and quickTelex opt-in") {
 }
 
 suite.test("AITokenMonitor: detects ChatGPT/Codex and excludes Antigravity per user preference") {
-    let monitor = AITokenMonitor()
+    let tmpCache = FileManager.default.temporaryDirectory.appendingPathComponent("MacPulseAICache-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: tmpCache) }
+    let monitor = AITokenMonitor(cacheFileURL: tmpCache)
     let snap = monitor.scanAll()
     try expectEqual(snap.providers.count, 3)
     try expect(snap.antigravity == nil, "Antigravity must be excluded from scanAll()")
     let chatgpt = snap.providers.first { $0.providerType == .openaiCodex }
     try expect(chatgpt != nil, "ChatGPT provider must be present")
-    if let gpt = chatgpt, gpt.isDetected {
-        try expect(gpt.fiveHourQuota != nil, "ChatGPT must have five-hour quota")
-        try expect(gpt.weeklyQuota != nil, "ChatGPT must have weekly quota")
+    if let gpt = chatgpt, gpt.isDetected, gpt.sourceState == .live {
+        try expect(gpt.fiveHourQuota != nil, "ChatGPT must have five-hour quota when live")
+        try expect(gpt.weeklyQuota != nil, "ChatGPT must have weekly quota when live")
     }
 }
 
@@ -835,31 +837,29 @@ suite.test("IME 41: Natural typing of English prefixes and words (reset, result,
 }
 
 suite.test("IME 42: Comprehensive quá and qu-onset typing resilience") {
-    // 1. Saved settings from user store
-    let store = VietnameseSettingsStore()
-    let saved = store.load().settings
-    let engSaved = VietnameseEngine(settings: saved)
+    // 1. Quick Telex enabled (deterministic settings — never depend on host machine's user store)
+    let engQuick = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, quickTelex: true))
 
-    try expectEqual(engSaved.simulate("quas"), "quá")
-    try expectEqual(engSaved.simulate("quas "), "quá ")
-    try expectEqual(engSaved.simulate("\"quas\""), "\"quá\"")
-    try expectEqual(engSaved.simulate("quas\""), "quá\"")
-    try expectEqual(engSaved.simulate("'quas'"), "'quá'")
-    try expectEqual(engSaved.simulate("quas,"), "quá,")
-    try expectEqual(engSaved.simulate("quas."), "quá.")
-    try expectEqual(engSaved.simulate("qqas"), "quá")
-    try expectEqual(engSaved.simulate("qqas "), "quá ")
-    try expectEqual(engSaved.simulate("qas"), "quá")
-    try expectEqual(engSaved.simulate("qas "), "quá ")
-    try expectEqual(engSaved.simulate("qan "), "quan ")
-    try expectEqual(engSaved.simulate("qen "), "quen ")
-    try expectEqual(engSaved.simulate("qes "), "qué ")
-    try expectEqual(engSaved.simulate("qy "), "quy ")
-    try expectEqual(engSaved.simulate("qys "), "quý ")
-    try expectEqual(engSaved.simulate("qusa"), "quá")
-    try expectEqual(engSaved.simulate("qusa "), "quá ")
+    try expectEqual(engQuick.simulate("quas"), "quá")
+    try expectEqual(engQuick.simulate("quas "), "quá ")
+    try expectEqual(engQuick.simulate("\"quas\""), "\"quá\"")
+    try expectEqual(engQuick.simulate("quas\""), "quá\"")
+    try expectEqual(engQuick.simulate("'quas'"), "'quá'")
+    try expectEqual(engQuick.simulate("quas,"), "quá,")
+    try expectEqual(engQuick.simulate("quas."), "quá.")
+    try expectEqual(engQuick.simulate("qqas"), "quá")
+    try expectEqual(engQuick.simulate("qqas "), "quá ")
+    try expectEqual(engQuick.simulate("qas"), "quá")
+    try expectEqual(engQuick.simulate("qas "), "quá ")
+    try expectEqual(engQuick.simulate("qan "), "quan ")
+    try expectEqual(engQuick.simulate("qen "), "quen ")
+    try expectEqual(engQuick.simulate("qes "), "qué ")
+    try expectEqual(engQuick.simulate("qy "), "quy ")
+    try expectEqual(engQuick.simulate("qys "), "quý ")
+    try expectEqual(engQuick.simulate("qusa"), "quá")
+    try expectEqual(engQuick.simulate("qusa "), "quá ")
 
-    // 2. Default Telex settings
+    // 2. Default Telex settings (quickTelex = false)
     let telexDefault = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
     try expectEqual(telexDefault.simulate("quas"), "quá")
     try expectEqual(telexDefault.simulate("quas "), "quá ")
@@ -877,9 +877,7 @@ suite.test("IME 42: Comprehensive quá and qu-onset typing resilience") {
 }
 
 suite.test("IME 43: Test and commonly mistyped English words natural typing") {
-    let store = VietnameseSettingsStore()
-    let saved = store.load().settings
-    let engSaved = VietnameseEngine(settings: saved)
+    let engSaved = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
 
     // Direct in-flight typing & double-key undo typing
     try expectEqual(engSaved.simulate("test"), "test")
@@ -931,9 +929,7 @@ suite.test("IME 43: Test and commonly mistyped English words natural typing") {
 }
 
 suite.test("IME 44: Comprehensive typing for 'vừa', 'vườn', 'cửa', 'lửa', 'người', 'được', 'nữa', 'mưa'") {
-    let store = VietnameseSettingsStore()
-    let saved = store.load().settings
-    let engSaved = VietnameseEngine(settings: saved)
+    let engSaved = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
 
     try expectEqual(engSaved.simulate("vuwaf"), "vừa")
     try expectEqual(engSaved.simulate("vuwaf "), "vừa ")
@@ -1029,7 +1025,7 @@ suite.test("v2.0: AITokenMonitor separates Today, 5h, and 7d tokens accurately a
     let fm = FileManager.default
     defer { try? fm.removeItem(at: tmp) }
 
-    let now = Date()
+    let now = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime]
 
