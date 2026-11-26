@@ -52,6 +52,7 @@ struct VietnameseView: View {
     private var basicWorkspace: some View {
         VStack(alignment: .leading, spacing: 10) {
             engineControlCockpit
+            secureInputBanner
             conflictBanner
             systemInputSourceBanner
             modeAndHotkeyCard
@@ -120,6 +121,27 @@ struct VietnameseView: View {
             }
         }
         .hudCard(accent: accent, chamfer: 9, padding: 11, showBrackets: true)
+    }
+
+    @ViewBuilder
+    private var secureInputBanner: some View {
+        if vm.isSecureInputBlocked {
+            HStack(alignment: .center, spacing: 9) {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundStyle(HudTheme.amber)
+                VStack(alignment: .leading, spacing: 1.5) {
+                    Text("macOS Secure Input đang khóa bộ gõ")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HudTheme.textPrimary)
+                    Text(vm.secureInputHolderName.map { "\($0) đang giữ Secure Input. Rời ô mật khẩu hoặc thoát app đó, bộ gõ sẽ tự chạy lại." }
+                         ?? "Đang ở ô mật khẩu hoặc app bảo mật. Rời ô mật khẩu để tiếp tục gõ tiếng Việt.")
+                        .font(.caption2)
+                        .foregroundStyle(HudTheme.textSecondary)
+                }
+                Spacer()
+            }
+            .cleanCard(accent: HudTheme.amber, cornerRadius: 8, padding: 9)
+        }
     }
 
     @ViewBuilder
@@ -368,6 +390,43 @@ struct VietnameseView: View {
                 HudToggleRow(title: "Kiểm tra chính tả & bảo vệ từ tiếng Anh / URL", isOn: $vm.imeSettings.spellCheckEnabled, accent: HudTheme.cyan)
                 HudToggleRow(title: "Vá thanh địa chỉ Chrome / Safari / Spotlight", isOn: $vm.imeSettings.fixChromiumAutocomplete, accent: HudTheme.cyan)
                 HudToggleRow(title: "Nhớ trạng thái Việt / Anh theo từng ứng dụng", isOn: $vm.imeSettings.smartSwitchPerApp, accent: HudTheme.cyan)
+
+                Rectangle().fill(HudTheme.borderSubtle.opacity(0.3)).frame(height: 0.7)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("NHỊP BƠM PHÍM CHỐNG RƠI CHỮ")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(HudTheme.textSecondary)
+                        Spacer()
+                        Text(vm.activeTapLevelLabel)
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(HudTheme.emerald.opacity(0.16), in: Capsule())
+                            .foregroundStyle(HudTheme.emerald)
+                    }
+                    HStack(spacing: 5) {
+                        ForEach(IMEInjectionSpeedMode.allCases) { mode in
+                            let selected = vm.imeSettings.injectionSpeedMode == mode
+                            Button {
+                                vm.imeSettings.injectionSpeedMode = mode
+                            } label: {
+                                Text(mode.displayName)
+                                    .font(.system(size: 10.5, weight: selected ? .bold : .medium, design: .monospaced))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 5)
+                                    .background(selected ? HudTheme.cyan.opacity(0.20) : HudTheme.insetBg, in: RoundedRectangle(cornerRadius: 6))
+                                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? HudTheme.cyan.opacity(0.8) : HudTheme.borderSubtle.opacity(0.32), lineWidth: 0.75))
+                                    .foregroundStyle(selected ? HudTheme.textPrimary : HudTheme.textSecondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    Text(vm.imeSettings.injectionSpeedMode.subtitle)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(HudTheme.textMuted)
+                }
 
                 if vm.imeSettings.smartSwitchPerApp && vm.perAppCount > 0 {
                     HStack {

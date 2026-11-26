@@ -174,7 +174,7 @@ private struct PopoverRootView: View {
                         .tracking(1.4)
                         .foregroundStyle(HudTheme.textPrimary)
 
-                    Text("v2.0")
+                    Text("v2.1.1")
                         .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                         .padding(.horizontal, 5.5)
                         .padding(.vertical, 1.5)

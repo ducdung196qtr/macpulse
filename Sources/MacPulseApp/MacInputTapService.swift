@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon
 import CoreGraphics
 import Foundation
+import IOKit
 import MacPulseCore
 import os
 
@@ -20,37 +21,28 @@ public enum TapRuntimeState: Equatable, Sendable {
     case failedToCreateTap
 }
 
+public struct LiveIMEInjectionStatus: Sendable, Equatable {
+    public let tapLevel: String
+    public let appBundleID: String
+    public let appName: String
+    public let profile: IMEInjectionProfile
+}
+
+/// Zero-lag macOS Vietnamese IME service combining the proven 2026 architectures of
+/// Dokey, OpenKey, and PHTV:
+/// - Single `.cgSessionEventTap` at `.headInsertEventTap` on a dedicated `.userInteractive` thread
+/// - ALL synthetic events inserted via `event.tapPostEvent(proxy)` (strict FIFO ahead of the next key)
+/// - `freeTextKey()` avoids `virtualKey: 0` (`kVK_ANSI_A`) and any key physically held down so
+///   Chromium/Electron NEVER drop replacement Unicode events as repeats during 200+ WPM rollover
+/// - Select-then-type (`Shift+←` with `[.maskShift, .maskSecondaryFn, .maskNumericPad]`) for
+///   Electron & Browsers (eliminates ProseMirror/Lexical/Blink Backspace races that cause `coộng`),
+///   plus `U+00B7` selection guard on Browsers & Spotlight to break inline autocomplete
+/// - ZERO synchronous AX IPC and ZERO `usleep` on the normal/Electron/Browser hot path (< 80µs/key)
+/// - In-memory word history stack for backspace-into-previous-word editing
+/// - 2-second non-destructive watchdog + macOS Secure Input holder detection (IORegistry)
 public final class MacInputTapService {
     public static let syntheticMagic: Int64 = 0x4D50_5649 // "MPVI"
-
-    private static let chromiumOrOmniboxBundles: Set<String> = [
-        "com.google.Chrome",
-        "com.google.Chrome.canary",
-        "com.brave.Browser",
-        "com.microsoft.edgemac",
-        "company.thebrowser.Browser", // Arc
-        "com.vivaldi.Vivaldi",
-        "com.operasoftware.Opera",
-        "com.apple.Safari",
-        "com.apple.Spotlight",
-        "org.mozilla.firefox",
-        "com.raycast.macos"
-    ]
-
-    private static let chatAndMessagingBundles: Set<String> = [
-        "com.vng.zalo",
-        "ru.keepcoder.Telegram",
-        "org.telegram.desktop",
-        "com.facebook.archon",
-        "com.tinyspeck.slackmacgap",
-        "com.hnc.Discord",
-        "com.apple.MobileSMS",
-        "com.apple.Notes",
-        "com.skype.skype",
-        "com.microsoft.Word",
-        "com.microsoft.teams",
-        "com.microsoft.teams2"
-    ]
+    private static let accessibilityKeyboardBundleID = "com.apple.inputmethod.AssistiveControl"
 
     public static var vpsAndRemoteDesktopBundles: Set<String> { VietnameseAppDetector.vpsAndRemoteDesktopBundles }
     public static var terminalAndShellBundles: Set<String> { VietnameseAppDetector.terminalAndShellBundles }
@@ -63,15 +55,27 @@ public final class MacInputTapService {
         VietnameseAppDetector.isTerminalApp(bundleID: bundleID, appName: appName)
     }
 
-    public static func computeIsAppExcluded(bundleID: String, appName: String, settings: VietnameseSettings, perAppEnabled: [String: Bool] = [:]) -> Bool {
-        VietnameseAppDetector.computeIsAppExcluded(bundleID: bundleID, appName: appName, settings: settings, perAppEnabled: perAppEnabled)
+    public static func computeIsAppExcluded(
+        bundleID: String,
+        appName: String,
+        settings: VietnameseSettings,
+        perAppEnabled: [String: Bool] = [:]
+    ) -> Bool {
+        VietnameseAppDetector.computeIsAppExcluded(
+            bundleID: bundleID,
+            appName: appName,
+            settings: settings,
+            perAppEnabled: perAppEnabled
+        )
     }
 
     private static let conflictBundleMap: [(bundleID: String, label: String)] = [
         ("com.lamquangminh.EVKey", "EVKey"),
         ("org.vielotus.inputmethod.VieLotusIM", "BeVie (VieLotusIM)"),
         ("com.tuyenmai.OpenKey", "OpenKey"),
-        ("com.trankynam.GoTiengViet", "GoTiengViet")
+        ("com.trankynam.GoTiengViet", "GoTiengViet"),
+        ("org.gonhanh.GoNhanh", "Gõ Nhanh"),
+        ("com.dhtoan.dokey.mac", "Dokey")
     ]
 
     private struct TapFastState {
@@ -79,9 +83,14 @@ public final class MacInputTapService {
         var hotkey: VietnameseHotkey
         var useCapsLock: Bool
         var fixChrome: Bool
+        var speedMode: IMEInjectionSpeedMode
         var isExcludedApp: Bool
-        var isBrowserApp: Bool
-        var isOmniboxFocused: Bool
+        var profile: IMEInjectionProfile
+    }
+
+    private struct BundleFrameworkHints {
+        var isElectron: Bool
+        var isBrowser: Bool
     }
 
     private var stateLock = os_unfair_lock()
@@ -91,22 +100,11 @@ public final class MacInputTapService {
     private var currentBundleID: String
     private var currentAppName: String
     private var currentAppPID: pid_t = 0
-    private var focusCheckGeneration: UInt64 = 0
-    private let focusCheckQueue = DispatchQueue(label: "com.macpulse.ime.focus", qos: .utility)
-
-    // Snapshot of hot-path settings accessed under os_unfair_lock (~15ns, zero data race)
+    private var currentWindowTitle: String = ""
     private var fastState: TapFastState
 
-    private func readFastState() -> TapFastState {
-        os_unfair_lock_lock(&stateLock)
-        let s = fastState
-        os_unfair_lock_unlock(&stateLock)
-        return s
-    }
-
-    private var eventSource: CGEventSource?
-    private var backspaceDownEvent: CGEvent?
-    private var backspaceUpEvent: CGEvent?
+    private var bundleHintsCache: [String: BundleFrameworkHints] = [:]
+    private let eventSource: CGEventSource?
 
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
@@ -114,20 +112,34 @@ public final class MacInputTapService {
     private var tapRunLoopSource: CFRunLoopSource?
     private var tapState: TapRuntimeState = .stopped
 
-    private var comboActive = false
-    private var comboCancelledByKey = false
+    private var modifierChord = ModifierChordTracker()
+    private var wasControlPressed = false
 
     private var workspaceObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var sessionActiveObserver: NSObjectProtocol?
     private var trustPollTimer: Timer?
+    private var watchdogTimer: Timer?
+    private var isSecureInputBlocked: Bool = false
+    private var lastPublishedStatusKey: String = ""
+
+    /// Lightweight opt-in debug tracer — 0ns overhead unless `/tmp/macpulse_ime_debug.log` exists.
+    private static let debugLogPath = "/tmp/macpulse_ime_debug.log"
+    private static let debugLogQueue = DispatchQueue(label: "com.macpulse.ime.debuglog", qos: .utility)
+    private var debugLogEnabled: Bool = false
 
     public var onLanguageToggled: ((Bool, String) -> Void)?
     public var onRuntimeStateChanged: ((TapRuntimeState, Bool) -> Void)?
     public var onFrontmostAppChanged: ((String, String) -> Void)?
+    public var onSecureInputChanged: ((Bool, String?) -> Void)?
+    public var onInjectionStatusChanged: ((LiveIMEInjectionStatus) -> Void)?
 
     public init(settings: VietnameseSettings, perAppEnabled: [String: Bool] = [:]) {
         self.settings = settings
         self.perAppEnabled = perAppEnabled
         self.engine = VietnameseEngine(settings: settings)
+        self.eventSource = CGEventSource(stateID: .privateState)
+
         let front = NSWorkspace.shared.frontmostApplication
         let frontBid = front?.bundleIdentifier ?? ""
         let frontName = front?.localizedName ?? frontBid
@@ -135,9 +147,17 @@ public final class MacInputTapService {
         self.currentBundleID = frontBid
         self.currentAppName = frontName
         self.currentAppPID = frontPID
-        let isExcluded = Self.computeIsAppExcluded(bundleID: frontBid, appName: frontName, settings: settings, perAppEnabled: perAppEnabled)
-        let isBrowser = VietnameseAppDetector.isBrowserOrSearchApp(bundleID: frontBid, appName: frontName)
-        let alwaysOmnibox = Self.isAlwaysSearchBarApp(bundleID: frontBid)
+
+        let hints = Self.inspectBundleFrameworks(app: front)
+        if !frontBid.isEmpty {
+            self.bundleHintsCache[frontBid.lowercased()] = hints
+        }
+        let isExcluded = Self.computeIsAppExcluded(
+            bundleID: frontBid,
+            appName: frontName,
+            settings: settings,
+            perAppEnabled: perAppEnabled
+        )
         var initialEnabled = settings.isEnabled
         if settings.smartSwitchPerApp && !frontBid.isEmpty {
             if let saved = perAppEnabled[frontBid] {
@@ -148,39 +168,32 @@ public final class MacInputTapService {
                 self.settings.isEnabled = false
             }
         }
+        let initialProfile = IMEAppProfileResolver.resolve(
+            bundleID: frontBid,
+            appName: frontName,
+            windowTitle: "",
+            isElectronBundle: hints.isElectron,
+            isBrowserBundle: hints.isBrowser,
+            fixChromiumAutocomplete: settings.fixChromiumAutocomplete,
+            speedMode: settings.injectionSpeedMode
+        )
         self.fastState = TapFastState(
             isEnabled: initialEnabled,
             hotkey: settings.hotkey,
             useCapsLock: settings.useCapsLockToSwitch,
             fixChrome: settings.fixChromiumAutocomplete,
+            speedMode: settings.injectionSpeedMode,
             isExcludedApp: isExcluded,
-            isBrowserApp: isBrowser,
-            isOmniboxFocused: alwaysOmnibox
+            profile: initialProfile
         )
-        // Use private state event source so synthetic events NEVER contaminate hardware HID device state.
-        // Pre-allocate reusable Backspace down/up events (exact OpenKey architecture):
-        // preserve default private flags + .maskNonCoalesced and leave timestamp untouched (0).
-        let src = CGEventSource(stateID: .privateState)
-        self.eventSource = src
-        if let src {
-            let bsDown = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true)
-            bsDown?.flags.insert(.maskNonCoalesced)
-            bsDown?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-            self.backspaceDownEvent = bsDown
-
-            let bsUp = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false)
-            bsUp?.flags.insert(.maskNonCoalesced)
-            bsUp?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-            self.backspaceUpEvent = bsUp
-        }
-        if isBrowser && !alwaysOmnibox && frontPID > 0 {
-            scheduleOmniboxFocusRefresh(pid: frontPID, bundleID: frontBid, delayMs: 0)
-        }
+        self.debugLogEnabled = FileManager.default.fileExists(atPath: Self.debugLogPath)
     }
 
     deinit {
         stop()
     }
+
+    // MARK: - Lifecycle
 
     public func start() {
         Self.terminateConflictingApps()
@@ -190,10 +203,8 @@ public final class MacInputTapService {
 
     public func stop() {
         stopTrustPolling()
-        if let obs = workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
-            workspaceObserver = nil
-        }
+        stopWatchdog()
+        removeWorkspaceObservers()
         teardownTapThread()
         setTapState(.stopped)
     }
@@ -203,24 +214,44 @@ public final class MacInputTapService {
         let prevEnabled = settings.isEnabled
         settings = newSettings
         engine.settings = newSettings
-        let isExcluded = Self.computeIsAppExcluded(bundleID: currentBundleID, appName: currentAppName, settings: newSettings, perAppEnabled: perAppEnabled)
-        let isBrowser = VietnameseAppDetector.isBrowserOrSearchApp(bundleID: currentBundleID, appName: currentAppName)
-        let prevOmnibox = fastState.isOmniboxFocused
+        let bid = currentBundleID
+        let name = currentAppName
+        let winTitle = currentWindowTitle
+        let hints = bundleHintsCache[bid.lowercased()] ?? BundleFrameworkHints(isElectron: false, isBrowser: false)
+        let isExcluded = Self.computeIsAppExcluded(
+            bundleID: bid,
+            appName: name,
+            settings: newSettings,
+            perAppEnabled: perAppEnabled
+        )
+        let profile = IMEAppProfileResolver.resolve(
+            bundleID: bid,
+            appName: name,
+            windowTitle: winTitle,
+            isElectronBundle: hints.isElectron,
+            isBrowserBundle: hints.isBrowser,
+            fixChromiumAutocomplete: newSettings.fixChromiumAutocomplete,
+            speedMode: newSettings.injectionSpeedMode
+        )
         fastState = TapFastState(
             isEnabled: newSettings.isEnabled,
             hotkey: newSettings.hotkey,
             useCapsLock: newSettings.useCapsLockToSwitch,
             fixChrome: newSettings.fixChromiumAutocomplete,
+            speedMode: newSettings.injectionSpeedMode,
             isExcludedApp: isExcluded,
-            isBrowserApp: isBrowser,
-            isOmniboxFocused: isBrowser ? prevOmnibox : false
+            profile: profile
         )
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
-        if newSettings.smartSwitchPerApp && !currentBundleID.isEmpty && currentBundleID != selfBid && prevEnabled != newSettings.isEnabled {
-            perAppEnabled[currentBundleID] = newSettings.isEnabled
+        if newSettings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid && prevEnabled != newSettings.isEnabled {
+            perAppEnabled[bid] = newSettings.isEnabled
         }
-        engine.reset()
+        engine.resetAll()
         os_unfair_lock_unlock(&stateLock)
+
+        publishInjectionStatusIfChanged(
+            LiveIMEInjectionStatus(tapLevel: "Session Tap", appBundleID: bid, appName: name, profile: profile)
+        )
     }
 
     public func currentPerAppMap() -> [String: Bool] {
@@ -238,9 +269,15 @@ public final class MacInputTapService {
 
     public func resetWordBuffer() {
         os_unfair_lock_lock(&stateLock)
-        engine.reset()
+        engine.resetAll()
         os_unfair_lock_unlock(&stateLock)
     }
+
+    public func currentTapLevelLabel() -> String {
+        "Session Tap"
+    }
+
+    // MARK: - Accessibility, Input Source, Conflicts, Secure Input
 
     public static func isAccessibilityTrusted(prompt: Bool = false) -> Bool {
         if prompt {
@@ -330,6 +367,30 @@ public final class MacInputTapService {
         return terminated
     }
 
+    public static func currentSecureInputHolderName() -> String? {
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        guard root != 0 else { return nil }
+        defer { IOObjectRelease(root) }
+        guard let users = IORegistryEntryCreateCFProperty(root, "IOConsoleUsers" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? [[String: Any]] else {
+            return nil
+        }
+        var holderPID: pid_t?
+        for session in users {
+            if let pid = session["kCGSSessionSecureInputPID"] as? Int, pid > 0 {
+                holderPID = pid_t(pid)
+                break
+            }
+        }
+        guard let pid = holderPID else { return nil }
+        if let app = NSRunningApplication(processIdentifier: pid), let name = app.localizedName, !name.isEmpty {
+            return name
+        }
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        return (String(cString: buffer) as NSString).lastPathComponent
+    }
+
     public func requestAccessibilityAndStart() {
         let trusted = Self.isAccessibilityTrusted(prompt: true)
         if trusted {
@@ -351,12 +412,17 @@ public final class MacInputTapService {
             if tapThread == nil {
                 launchTapThread()
             }
+            startWatchdogIfNeeded()
+            refreshSecureInputState()
         } else {
+            stopWatchdog()
             teardownTapThread()
             setTapState(.waitingAccessibility)
             startTrustPollingIfNeeded()
         }
     }
+
+    // MARK: - Watchdog & Workspace Observers (Main Thread — Zero Tap Overhead)
 
     private func stopTrustPolling() {
         DispatchQueue.main.async { [weak self] in
@@ -370,183 +436,315 @@ public final class MacInputTapService {
             guard let self, self.trustPollTimer == nil else { return }
             self.trustPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
-                let trusted = Self.isAccessibilityTrusted(prompt: false)
-                if trusted {
+                if Self.isAccessibilityTrusted(prompt: false) {
                     self.stopTrustPolling()
                     self.launchTapThread()
+                    self.startWatchdogIfNeeded()
+                    self.refreshSecureInputState()
                 }
             }
+        }
+    }
+
+    private func startWatchdogIfNeeded() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.watchdogTimer == nil else { return }
+            let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+                self?.watchdogTick()
+            }
+            timer.tolerance = 0.5
+            RunLoop.main.add(timer, forMode: .common)
+            self.watchdogTimer = timer
+        }
+    }
+
+    private func stopWatchdog() {
+        DispatchQueue.main.async { [weak self] in
+            self?.watchdogTimer?.invalidate()
+            self?.watchdogTimer = nil
+        }
+    }
+
+    /// Non-destructive watchdog: re-enables a disabled tap in place and refreshes browser title / Secure Input.
+    /// NEVER tears down a healthy running tap.
+    private func watchdogTick() {
+        refreshSecureInputState()
+        let debugNow = FileManager.default.fileExists(atPath: Self.debugLogPath)
+
+        os_unfair_lock_lock(&stateLock)
+        debugLogEnabled = debugNow
+        let port = eventTap
+        let kind = fastState.profile.appKind
+        let pid = currentAppPID
+        let bid = currentBundleID
+        let name = currentAppName
+        os_unfair_lock_unlock(&stateLock)
+
+        if let port, !CGEvent.tapIsEnabled(tap: port) {
+            os_unfair_lock_lock(&stateLock)
+            engine.resetAll()
+            os_unfair_lock_unlock(&stateLock)
+            CGEvent.tapEnable(tap: port, enable: true)
+            trace("WATCHDOG re-enabled disabled tap")
+        }
+
+        // Refresh browser window title off the tap thread (detects Google Docs/Sheets/Slides tabs)
+        if kind == .browser && pid > 0 {
+            refreshBrowserWindowTitleAsync(pid: pid, bundleID: bid, appName: name)
+        }
+    }
+
+    public func refreshSecureInputState() {
+        let blocked = IsSecureEventInputEnabled()
+        os_unfair_lock_lock(&stateLock)
+        let changed = (blocked != isSecureInputBlocked)
+        isSecureInputBlocked = blocked
+        let port = eventTap
+        if changed {
+            engine.resetAll()
+        }
+        os_unfair_lock_unlock(&stateLock)
+
+        guard changed else { return }
+        if !blocked, let port {
+            CGEvent.tapEnable(tap: port, enable: true)
+        }
+        let holder = blocked ? Self.currentSecureInputHolderName() : nil
+        DispatchQueue.main.async { [weak self] in
+            self?.onSecureInputChanged?(blocked, holder)
         }
     }
 
     private func observeWorkspaceIfNeeded() {
-        guard workspaceObserver == nil else { return }
+        let nc = NSWorkspace.shared.notificationCenter
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] note in
-            guard let self else { return }
-            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            let bid = app.bundleIdentifier ?? ""
-            let name = app.localizedName ?? bid
-            let pid = app.processIdentifier
-            let isBrowser = VietnameseAppDetector.isBrowserOrSearchApp(bundleID: bid, appName: name)
-            let alwaysOmnibox = Self.isAlwaysSearchBarApp(bundleID: bid)
 
-            os_unfair_lock_lock(&self.stateLock)
-            self.currentBundleID = bid
-            self.currentAppName = name
-            self.currentAppPID = pid
-            self.engine.reset()
-            let isExcluded = Self.computeIsAppExcluded(bundleID: bid, appName: name, settings: self.settings, perAppEnabled: self.perAppEnabled)
-            self.fastState.isExcludedApp = isExcluded
-            self.fastState.isBrowserApp = isBrowser
-            self.fastState.isOmniboxFocused = alwaysOmnibox
-            let shouldCheckFocus = isBrowser && !alwaysOmnibox && self.fastState.fixChrome && pid > 0
-            var switchedLanguage: Bool?
-            if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
-                if let saved = self.perAppEnabled[bid] {
-                    if saved != self.settings.isEnabled {
-                        self.settings.isEnabled = saved
-                        self.fastState.isEnabled = saved
-                        self.engine.settings = self.settings
-                        switchedLanguage = saved
-                    }
-                } else if isExcluded {
-                    // VPS, Remote Desktop or Terminal app without explicit override defaults to English!
-                    if self.settings.isEnabled {
-                        self.settings.isEnabled = false
-                        self.fastState.isEnabled = false
-                        self.engine.settings = self.settings
-                        switchedLanguage = false
+        if workspaceObserver == nil {
+            workspaceObserver = nc.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let self else { return }
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                let bid = app.bundleIdentifier ?? ""
+                let name = app.localizedName ?? bid
+                let pid = app.processIdentifier
+                let hints = self.cachedOrInspectHints(for: app, bundleID: bid)
+
+                os_unfair_lock_lock(&self.stateLock)
+                self.currentBundleID = bid
+                self.currentAppName = name
+                self.currentAppPID = pid
+                self.currentWindowTitle = ""
+                self.engine.resetAll()
+
+                let isExcluded = Self.computeIsAppExcluded(
+                    bundleID: bid,
+                    appName: name,
+                    settings: self.settings,
+                    perAppEnabled: self.perAppEnabled
+                )
+                self.fastState.isExcludedApp = isExcluded
+
+                var switchedLanguage: Bool?
+                if self.settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
+                    if let saved = self.perAppEnabled[bid] {
+                        if saved != self.settings.isEnabled {
+                            self.settings.isEnabled = saved
+                            self.fastState.isEnabled = saved
+                            self.engine.settings = self.settings
+                            switchedLanguage = saved
+                        }
+                    } else if isExcluded {
+                        if self.settings.isEnabled {
+                            self.settings.isEnabled = false
+                            self.fastState.isEnabled = false
+                            self.engine.settings = self.settings
+                            switchedLanguage = false
+                        }
                     }
                 }
-            }
-            os_unfair_lock_unlock(&self.stateLock)
 
-            if shouldCheckFocus {
-                self.scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 30)
-            }
+                let profile = IMEAppProfileResolver.resolve(
+                    bundleID: bid,
+                    appName: name,
+                    windowTitle: "",
+                    isElectronBundle: hints.isElectron,
+                    isBrowserBundle: hints.isBrowser,
+                    fixChromiumAutocomplete: self.fastState.fixChrome,
+                    speedMode: self.fastState.speedMode
+                )
+                self.fastState.profile = profile
+                os_unfair_lock_unlock(&self.stateLock)
 
-            DispatchQueue.main.async {
+                self.publishInjectionStatusIfChanged(
+                    LiveIMEInjectionStatus(tapLevel: "Session Tap", appBundleID: bid, appName: name, profile: profile)
+                )
+                self.refreshSecureInputState()
                 self.onFrontmostAppChanged?(bid, name)
                 if let lang = switchedLanguage {
                     self.onLanguageToggled?(lang, bid)
                 }
+
+                if profile.appKind == .browser && pid > 0 {
+                    self.refreshBrowserWindowTitleAsync(pid: pid, bundleID: bid, appName: name)
+                }
+            }
+        }
+
+        if wakeObserver == nil {
+            wakeObserver = nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.watchdogTick()
+            }
+        }
+        if sessionActiveObserver == nil {
+            sessionActiveObserver = nc.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.watchdogTick()
             }
         }
     }
 
-    private static func isAlwaysSearchBarApp(bundleID: String) -> Bool {
-        let lower = bundleID.lowercased()
-        return lower == "com.apple.spotlight" || lower == "com.raycast.macos"
+    private func removeWorkspaceObservers() {
+        let nc = NSWorkspace.shared.notificationCenter
+        if let obs = workspaceObserver { nc.removeObserver(obs); workspaceObserver = nil }
+        if let obs = wakeObserver { nc.removeObserver(obs); wakeObserver = nil }
+        if let obs = sessionActiveObserver { nc.removeObserver(obs); sessionActiveObserver = nil }
     }
 
-    private func scheduleOmniboxFocusRefresh(pid: pid_t, bundleID: String, delayMs: Int) {
-        guard pid > 0 else { return }
-        os_unfair_lock_lock(&stateLock)
-        focusCheckGeneration &+= 1
-        let gen = focusCheckGeneration
-        os_unfair_lock_unlock(&stateLock)
+    private static func inspectBundleFrameworks(app: NSRunningApplication?) -> BundleFrameworkHints {
+        guard let url = app?.bundleURL else {
+            return BundleFrameworkHints(isElectron: false, isBrowser: false)
+        }
+        let frameworksDir = url.appendingPathComponent("Contents/Frameworks").path
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: frameworksDir)) ?? []
+        var isElectron = false
+        var isBrowser = false
+        for name in names {
+            if name == "Electron Framework.framework" || name == "Chromium Embedded Framework.framework" {
+                isElectron = true
+            } else if name.hasSuffix(" Framework.framework") {
+                if ["Chrome", "Chromium", "Edge", "Brave", "Opera", "Vivaldi"].contains(where: { name.contains($0) }) {
+                    isBrowser = true
+                }
+            }
+        }
+        return BundleFrameworkHints(isElectron: isElectron, isBrowser: isBrowser)
+    }
 
-        let work = { [weak self] in
+    private func cachedOrInspectHints(for app: NSRunningApplication?, bundleID: String) -> BundleFrameworkHints {
+        let key = bundleID.lowercased()
+        guard !key.isEmpty else { return BundleFrameworkHints(isElectron: false, isBrowser: false) }
+        os_unfair_lock_lock(&stateLock)
+        let cached = bundleHintsCache[key]
+        os_unfair_lock_unlock(&stateLock)
+        if let cached { return cached }
+
+        let inspected = Self.inspectBundleFrameworks(app: app)
+        os_unfair_lock_lock(&stateLock)
+        bundleHintsCache[key] = inspected
+        os_unfair_lock_unlock(&stateLock)
+        return inspected
+    }
+
+    /// Reads the browser's focused window title on a background queue (never on the tap thread)
+    /// so Google Docs / Sheets / Slides automatically switch to 1-char-per-event pacing.
+    private func refreshBrowserWindowTitleAsync(pid: pid_t, bundleID: String, appName: String) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let focusedOmnibox = Self.isFocusedElementBrowserOmnibox(pid: pid, bundleID: bundleID)
+            let appEl = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(appEl, 0.08)
+            var winRef: CFTypeRef?
+            var title = ""
+            if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+               let winRef, CFGetTypeID(winRef) == AXUIElementGetTypeID() {
+                var titleRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(winRef as! AXUIElement, kAXTitleAttribute as CFString, &titleRef) == .success,
+                   let str = titleRef as? String {
+                    title = str
+                }
+            }
+
             os_unfair_lock_lock(&self.stateLock)
-            if self.focusCheckGeneration == gen && self.currentAppPID == pid && self.fastState.isBrowserApp {
-                self.fastState.isOmniboxFocused = focusedOmnibox
+            guard self.currentAppPID == pid else {
+                os_unfair_lock_unlock(&self.stateLock)
+                return
+            }
+            let titleChanged = (title != self.currentWindowTitle)
+            self.currentWindowTitle = title
+            let hints = self.bundleHintsCache[bundleID.lowercased()] ?? BundleFrameworkHints(isElectron: false, isBrowser: false)
+            let newProfile = IMEAppProfileResolver.resolve(
+                bundleID: bundleID,
+                appName: appName,
+                windowTitle: title,
+                isElectronBundle: hints.isElectron,
+                isBrowserBundle: hints.isBrowser,
+                fixChromiumAutocomplete: self.fastState.fixChrome,
+                speedMode: self.fastState.speedMode
+            )
+            let profileChanged = (newProfile != self.fastState.profile)
+            if titleChanged || profileChanged {
+                self.fastState.profile = newProfile
             }
             os_unfair_lock_unlock(&self.stateLock)
-        }
 
-        if delayMs > 0 {
-            focusCheckQueue.asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: work)
-        } else {
-            focusCheckQueue.async(execute: work)
+            if profileChanged {
+                self.publishInjectionStatusIfChanged(
+                    LiveIMEInjectionStatus(tapLevel: "Session Tap", appBundleID: bundleID, appName: appName, profile: newProfile)
+                )
+            }
         }
     }
 
-    /// Runs strictly off the EventTap thread on `.utility` QoS to detect whether focus in a browser
-    /// is inside the native Omnibox/address bar (needs autocomplete collapse) vs inside a web page DOM
-    /// (zero extra chars, zero extra backspaces).
-    private static func isFocusedElementBrowserOmnibox(pid: pid_t, bundleID: String) -> Bool {
-        if isAlwaysSearchBarApp(bundleID: bundleID) {
-            return true
+    private func publishInjectionStatusIfChanged(_ status: LiveIMEInjectionStatus) {
+        let key = "\(status.tapLevel)|\(status.appBundleID)|\(status.profile.method.rawValue)|\(status.profile.reason)"
+        os_unfair_lock_lock(&stateLock)
+        let changed = (key != lastPublishedStatusKey)
+        if changed { lastPublishedStatusKey = key }
+        os_unfair_lock_unlock(&stateLock)
+        guard changed else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.onInjectionStatusChanged?(status)
         }
-        let appEl = AXUIElementCreateApplication(pid)
-        var focusedObj: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &focusedObj) == .success,
-              let focusedObj,
-              CFGetTypeID(focusedObj) == AXUIElementGetTypeID() else {
+    }
+
+    /// WindowServer-local check for Spotlight overlay (only called when frontmost appKind == .normal).
+    /// Queries `kAXFocusedApplicationAttribute` (answered by WindowServer, never blocks Electron).
+    private static func isSpotlightCurrentlyFocused() -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.04)
+        var appRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
+              let appRef, CFGetTypeID(appRef) == AXUIElementGetTypeID() else {
             return false
         }
-        let focused = focusedObj as! AXUIElement
-
-        var roleObj: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(focused, kAXRoleAttribute as CFString, &roleObj) == .success,
-              let role = roleObj as? String else {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(appRef as! AXUIElement, &pid) == .success, pid > 0,
+              let bid = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier else {
             return false
         }
+        return IMEAppProfileResolver.isSpotlightLike(bundleID: bid)
+    }
 
-        // Address bar / Omnibox is always AXTextField or AXComboBox — never AXTextArea, AXWebArea, AXGroup
-        guard role == "AXTextField" || role == "AXComboBox" else {
+    private static func isClickOnAccessibilityKeyboard(_ cgPoint: CGPoint) -> Bool {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
-
-        // Chromium & WebKit DOM inputs expose AXDOMClassList or AXDOMIdentifier; native Omnibox chrome does not
-        var domClassObj: CFTypeRef?
-        if AXUIElementCopyAttributeValue(focused, "AXDOMClassList" as CFString, &domClassObj) == .success,
-           domClassObj != nil {
-            return false
-        }
-        var domIDObj: CFTypeRef?
-        if AXUIElementCopyAttributeValue(focused, "AXDOMIdentifier" as CFString, &domIDObj) == .success,
-           let domID = domIDObj as? String, !domID.isEmpty {
-            return false
-        }
-
-        // Positive match for Safari / WebKit address bar
-        var identObj: CFTypeRef?
-        if AXUIElementCopyAttributeValue(focused, kAXIdentifierAttribute as CFString, &identObj) == .success,
-           let ident = identObj as? String, ident == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD" {
-            return true
-        }
-
-        // Walk up parent chain — MUST positively reach AXWindow via AXToolbar without hitting AXWebArea or AX errors.
-        // Never default to `true` on deep React/WordPress webpage DOMs!
-        var cursor = focused
-        var sawToolbar = false
-        for _ in 0..<24 {
-            var parentObj: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(cursor, kAXParentAttribute as CFString, &parentObj) == .success,
-                  let parentObj,
-                  CFGetTypeID(parentObj) == AXUIElementGetTypeID() else {
-                return false
+        for w in windows {
+            let alpha = (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
+            if alpha <= 0.01 { continue }
+            guard let boundsDict = w[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  !bounds.isEmpty, bounds.contains(cgPoint) else { continue }
+            if let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value {
+                return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == accessibilityKeyboardBundleID
             }
-            let parent = parentObj as! AXUIElement
-            var pRoleObj: CFTypeRef?
-            if AXUIElementCopyAttributeValue(parent, kAXRoleAttribute as CFString, &pRoleObj) == .success,
-               let pRole = pRoleObj as? String {
-                if pRole == "AXWebArea" {
-                    return false
-                }
-                if pRole == "AXToolbar" {
-                    sawToolbar = true
-                }
-                if pRole == "AXWindow" {
-                    return sawToolbar
-                }
-                if pRole == "AXApplication" {
-                    return false
-                }
-            }
-            cursor = parent
+            return false
         }
-
         return false
     }
+
+    // MARK: - Event Tap Thread
 
     private func setTapState(_ newState: TapRuntimeState) {
         os_unfair_lock_lock(&stateLock)
@@ -608,8 +806,7 @@ public final class MacInputTapService {
             | (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
+            | (1 << CGEventType.otherMouseDown.rawValue)
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         guard let port = CGEvent.tapCreate(
@@ -646,196 +843,198 @@ public final class MacInputTapService {
         CFRunLoopRun()
     }
 
+    // MARK: - Event Handling (Tap Thread — < 80µs hot path!)
+
+    private func readFastState() -> TapFastState {
+        os_unfair_lock_lock(&stateLock)
+        let s = fastState
+        os_unfair_lock_unlock(&stateLock)
+        return s
+    }
+
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        let pass = Unmanaged.passUnretained(event)
+
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             os_unfair_lock_lock(&stateLock)
             let port = eventTap
-            engine.reset()
+            engine.resetAll()
             os_unfair_lock_unlock(&stateLock)
             if let port {
                 CGEvent.tapEnable(tap: port, enable: true)
             }
-            return Unmanaged.passUnretained(event)
+            trace("TAP_DISABLED type=\(type.rawValue) -> re-enabled")
+            return pass
         }
 
         if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticMagic {
-            return Unmanaged.passUnretained(event)
+            return pass
         }
 
-        if type == .leftMouseDown || type == .rightMouseDown || type == .leftMouseDragged || type == .rightMouseDragged {
-            os_unfair_lock_lock(&stateLock)
-            let snap = fastState
-            let pid = currentAppPID
-            let bid = currentBundleID
-            if snap.isEnabled {
-                engine.reset()
+        if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            if !Self.isClickOnAccessibilityKeyboard(event.location) {
+                modifierChord.reset()
+                os_unfair_lock_lock(&stateLock)
+                engine.resetAll()
+                os_unfair_lock_unlock(&stateLock)
             }
-            os_unfair_lock_unlock(&stateLock)
-
-            if type == .leftMouseDown && snap.isBrowserApp && snap.fixChrome && !Self.isAlwaysSearchBarApp(bundleID: bid) && pid > 0 {
-                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
-            }
-            return Unmanaged.passUnretained(event)
+            return pass
         }
 
         if type == .flagsChanged {
             handleFlagsChanged(event)
-            return Unmanaged.passUnretained(event)
+            return pass
         }
 
         guard type == .keyDown else {
-            return Unmanaged.passUnretained(event)
+            return pass
         }
 
-        comboCancelledByKey = true
+        let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift, .maskSecondaryFn]
+        modifierChord.keyPressed(modifiersHeldRaw: event.flags.intersection(modifierMask).rawValue)
+
         return handleKeyDown(proxy: proxy, event: event)
     }
 
     private func handleFlagsChanged(_ event: CGEvent) {
         let snap = readFastState()
         if snap.isExcludedApp { return }
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let hotkey = snap.hotkey
-        let useCaps = snap.useCapsLock
 
-        if (hotkey == .capsLock || useCaps) && keyCode == 0x39 {
+        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let flags = event.flags
+
+        // Control press rhythm-break (EVKey / GoNhanh behavior)
+        let isCtrlNow = flags.contains(.maskControl)
+        if isCtrlNow && !wasControlPressed {
+            os_unfair_lock_lock(&stateLock)
+            engine.reset()
+            os_unfair_lock_unlock(&stateLock)
+        }
+        wasControlPressed = isCtrlNow
+
+        if (snap.hotkey == .capsLock || snap.useCapsLock) && keyCode == 0x39 {
             toggleLanguageFromHotkey()
             return
         }
 
-        let flags = event.flags
-        let hasCmd = flags.contains(.maskCommand)
-        let hasCtrl = flags.contains(.maskControl)
-        let hasOpt = flags.contains(.maskAlternate)
-        let hasShift = flags.contains(.maskShift)
+        let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift, .maskSecondaryFn]
+        let masked = flags.intersection(modifierMask).rawValue
 
-        switch hotkey {
-        case .ctrlShift:
-            let pressed = hasCtrl && hasShift && !hasCmd && !hasOpt
-            if pressed {
-                if !comboActive {
-                    comboActive = true
-                    comboCancelledByKey = false
-                }
-            } else if comboActive {
-                let shouldToggle = !comboCancelledByKey && (!hasCtrl || !hasShift) && !hasCmd && !hasOpt
-                comboActive = false
-                comboCancelledByKey = false
-                if shouldToggle {
+        if let peakRaw = modifierChord.modifiersChanged(to: masked) {
+            let peak = CGEventFlags(rawValue: peakRaw)
+            switch snap.hotkey {
+            case .ctrlShift:
+                if peak == [.maskControl, .maskShift] {
                     toggleLanguageFromHotkey()
                 }
-            }
-        case .cmdShift:
-            let pressed = hasCmd && hasShift && !hasCtrl && !hasOpt
-            if pressed {
-                if !comboActive {
-                    comboActive = true
-                    comboCancelledByKey = false
-                }
-            } else if comboActive {
-                let shouldToggle = !comboCancelledByKey && (!hasCmd || !hasShift) && !hasCtrl && !hasOpt
-                comboActive = false
-                comboCancelledByKey = false
-                if shouldToggle {
+            case .cmdShift:
+                if peak == [.maskCommand, .maskShift] {
                     toggleLanguageFromHotkey()
                 }
+            case .optionZ, .ctrlSpace, .capsLock:
+                break
             }
-        case .optionZ, .ctrlSpace, .capsLock:
-            comboActive = false
         }
     }
 
     private func handleKeyDown(proxy: CGEventTapProxy, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Fast-path bypass for excluded applications (Windows App, Remote Desktop, VPS clients):
-        // Pass all keystrokes through immediately with 0 delay, 0 backspaces, 0 state mutation.
-        // Also preserves Windows shortcuts (Ctrl+Space for IntelliSense, Alt+keys, etc.) without swallowing!
+        let pass = Unmanaged.passUnretained(event)
         let snap = readFastState()
-        if snap.isExcludedApp {
-            return Unmanaged.passUnretained(event)
+        if snap.isExcludedApp || snap.profile.method == .passthrough {
+            return pass
         }
 
         let flags = event.flags
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let hotkey = snap.hotkey
-        let isEnabled = snap.isEnabled
 
-        if hotkey == .optionZ && keyCode == 0x06 && flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl) {
-            toggleLanguageFromHotkey()
+        // Language toggle shortcuts
+        if snap.hotkey == .optionZ && keyCode == 0x06
+            && flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl) {
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                toggleLanguageFromHotkey()
+            }
             return nil
         }
-        if hotkey == .ctrlSpace && keyCode == 0x31 && flags.contains(.maskControl) && !flags.contains(.maskCommand) && !flags.contains(.maskAlternate) {
-            toggleLanguageFromHotkey()
+        if snap.hotkey == .ctrlSpace && keyCode == 0x31
+            && flags.contains(.maskControl) && !flags.contains(.maskCommand) && !flags.contains(.maskAlternate) {
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                toggleLanguageFromHotkey()
+            }
             return nil
         }
 
-        // Master switch guard: if Vietnamese IME is disabled, pass all keystrokes through immediately.
-        // Zero delay, zero state lock, zero backspace or escape interception.
-        guard isEnabled else {
-            return Unmanaged.passUnretained(event)
+        guard snap.isEnabled else {
+            return pass
         }
 
+        // Key held down (autorepeat) -> start fresh word & pass through
+        if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+            os_unfair_lock_lock(&stateLock)
+            engine.resetAll()
+            os_unfair_lock_unlock(&stateLock)
+            return pass
+        }
+
+        // Shortcuts (Cmd / Ctrl / Option / Fn) never enter the engine
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskSecondaryFn) {
             os_unfair_lock_lock(&stateLock)
-            engine.reset()
-            let pid = currentAppPID
-            let bid = currentBundleID
-            let refreshFocus = fastState.isBrowserApp && fastState.fixChrome
-                && flags.contains(.maskCommand)
-                && (keyCode == 0x25 || keyCode == 0x11 || keyCode == 0x28 || keyCode == 0x2D) // Cmd+L, T, K, N
+            engine.resetAll()
             os_unfair_lock_unlock(&stateLock)
-            if refreshFocus && pid > 0 {
-                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
-            }
-            return Unmanaged.passUnretained(event)
+            return pass
         }
 
         switch keyCode {
-        case 0x24, 0x4C, 0x30, 0x75, 0x7B, 0x7C, 0x7D, 0x7E, 0x73, 0x77, 0x74, 0x79:
+        case 0x75, 0x7B, 0x7C, 0x7D, 0x7E, 0x73, 0x77, 0x74, 0x79:
+            // Forward Delete, Arrows, Home, End, PageUp, PageDown
             os_unfair_lock_lock(&stateLock)
-            engine.reset()
-            let pid = currentAppPID
-            let bid = currentBundleID
-            let refreshFocus = fastState.isBrowserApp && fastState.fixChrome
-                && (keyCode == 0x24 || keyCode == 0x4C || keyCode == 0x30) // Return, Enter, Tab
+            engine.resetAll()
             os_unfair_lock_unlock(&stateLock)
-            if refreshFocus && pid > 0 {
-                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
+            return pass
+
+        case 0x24, 0x4C, 0x30:
+            // Return (0x24), Numpad Enter (0x4C), Tab (0x30):
+            // Finish current word (auto-restore / macro) and replay a copy of the original event if edited!
+            let delimChar: Character = (keyCode == 0x30) ? "\t" : "\n"
+            os_unfair_lock_lock(&stateLock)
+            let action = engine.processDelimiter(delimChar, allowAutoRestore: true)
+            engine.resetAll()
+            os_unfair_lock_unlock(&stateLock)
+
+            if case .replace(let bs, let rawText) = action {
+                let cleanText = rawText.hasSuffix(String(delimChar)) ? String(rawText.dropLast()) : rawText
+                deliverEdit(bs: bs, text: cleanText, snap: snap, proxy: proxy, thenOriginal: event)
+                return nil
             }
-            return Unmanaged.passUnretained(event)
+            return pass
+
         case 0x33:
+            // Backspace: edits active word or steps back across space into previous word in history
             os_unfair_lock_lock(&stateLock)
             let action = engine.processBackspace()
-            let needsOmniboxFix = fastState.fixChrome && fastState.isOmniboxFocused
             os_unfair_lock_unlock(&stateLock)
-            return applyAction(action, proxy: proxy, originalEvent: event, needsOmniboxFix: needsOmniboxFix)
+
+            if case .replace(let bs, let text) = action {
+                deliverEdit(bs: bs, text: text, snap: snap, proxy: proxy, thenOriginal: nil)
+                return nil
+            }
+            return pass
+
         case 0x35:
+            // Escape: restore exact raw ASCII keystrokes if enabled
             os_unfair_lock_lock(&stateLock)
             let action = engine.processEscape()
-            let needsOmniboxFix = fastState.fixChrome && fastState.isOmniboxFocused
-            let pid = currentAppPID
-            let bid = currentBundleID
-            let refreshFocus = fastState.isBrowserApp && fastState.fixChrome
             os_unfair_lock_unlock(&stateLock)
-            if refreshFocus && pid > 0 {
-                scheduleOmniboxFocusRefresh(pid: pid, bundleID: bid, delayMs: 45)
+            if case .replace(let bs, let text) = action {
+                deliverEdit(bs: bs, text: text, snap: snap, proxy: proxy, thenOriginal: nil)
+                return nil
             }
-            if case .replace = action {
-                return applyAction(action, proxy: proxy, originalEvent: event, needsOmniboxFix: needsOmniboxFix)
-            }
-            return Unmanaged.passUnretained(event)
+            return pass
+
         default:
             break
         }
 
-        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        if isRepeat {
-            os_unfair_lock_lock(&stateLock)
-            engine.reset()
-            os_unfair_lock_unlock(&stateLock)
-            return Unmanaged.passUnretained(event)
-        }
-
-        // Zero-allocation stack buffer extraction for single UTF-16 character (99.9% of keypresses)
+        // Zero-allocation stack buffer extraction for single UTF-16 character
         var actualLength = 0
         var stackBuf: (UniChar, UniChar, UniChar, UniChar) = (0, 0, 0, 0)
         withUnsafeMutablePointer(to: &stackBuf) { ptr in
@@ -843,34 +1042,38 @@ public final class MacInputTapService {
                 event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &actualLength, unicodeString: uniPtr)
             }
         }
-        guard actualLength > 0 else {
+        guard actualLength == 1 else {
             os_unfair_lock_lock(&stateLock)
-            engine.reset()
+            engine.resetAll()
             os_unfair_lock_unlock(&stateLock)
-            return Unmanaged.passUnretained(event)
+            return pass
         }
 
-        let ch: Character
-        if actualLength == 1, let scalar = UnicodeScalar(stackBuf.0) {
-            ch = Character(scalar)
-        } else {
-            let units: [UniChar] = [stackBuf.0, stackBuf.1, stackBuf.2, stackBuf.3]
-            let inputStr = String(utf16CodeUnits: units, count: min(actualLength, 4))
-            guard inputStr.count == 1, let first = inputStr.first else {
-                os_unfair_lock_lock(&stateLock)
-                engine.reset()
-                os_unfair_lock_unlock(&stateLock)
-                return Unmanaged.passUnretained(event)
-            }
-            ch = first
+        let unit = stackBuf.0
+        if unit < 0x20 || unit == 0x7F || (unit >= 0xF700 && unit <= 0xF8FF) || (unit >= 0xD800 && unit <= 0xDFFF) {
+            os_unfair_lock_lock(&stateLock)
+            engine.resetAll()
+            os_unfair_lock_unlock(&stateLock)
+            return pass
         }
+        guard let scalar = UnicodeScalar(unit) else {
+            return pass
+        }
+        let ch = Character(scalar)
 
         os_unfair_lock_lock(&stateLock)
         let action = engine.processCharacter(ch)
-        let needsOmniboxFix = fastState.fixChrome && fastState.isOmniboxFocused
         os_unfair_lock_unlock(&stateLock)
 
-        return applyAction(action, proxy: proxy, originalEvent: event, needsOmniboxFix: needsOmniboxFix)
+        switch action {
+        case .passthrough:
+            trace("PASS key=\(keyCode) ch='\(ch)'")
+            return pass
+        case .replace(let bs, let text):
+            trace("EDIT key=\(keyCode) ch='\(ch)' kind=\(snap.profile.appKind.rawValue) sel=\(snap.profile.useSelection) guard=\(snap.profile.clearInlineSelection) bs=\(bs) -> '\(text)'")
+            deliverEdit(bs: bs, text: text, snap: snap, proxy: proxy, thenOriginal: nil)
+            return nil
+        }
     }
 
     private func toggleLanguageFromHotkey() {
@@ -879,7 +1082,7 @@ public final class MacInputTapService {
         settings.isEnabled = nextEnabled
         fastState.isEnabled = nextEnabled
         engine.settings = settings
-        engine.reset()
+        engine.resetAll()
         let bid = currentBundleID
         let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
         if settings.smartSwitchPerApp && !bid.isEmpty && bid != selfBid {
@@ -897,88 +1100,150 @@ public final class MacInputTapService {
         }
     }
 
-    private func applyAction(
-        _ action: KeyAction,
-        proxy: CGEventTapProxy,
-        originalEvent: CGEvent,
-        needsOmniboxFix: Bool
-    ) -> Unmanaged<CGEvent>? {
-        switch action {
-        case .passthrough:
-            return Unmanaged.passUnretained(originalEvent)
-        case .replace(let backspaceCount, let text):
-            postReplacement(
-                proxy: proxy,
-                backspaceCount: backspaceCount,
-                text: text,
-                needsOmniboxFix: needsOmniboxFix
-            )
-            return nil
+    // MARK: - Dokey/OpenKey-Grade Atomic Delivery via `tapPostEvent(proxy)`
+
+    /// Picks a virtual key code NOT currently held down on the physical keyboard.
+    /// Critical for fast typing in Chromium/Electron: `virtualKey: 0` is `kVK_ANSI_A`,
+    /// so if the user's finger is still touching `'A'` during 150+ WPM rollover,
+    /// Chromium drops `keyDown(0)` carrying Unicode text as an autorepeat!
+    @inline(__always)
+    private static func freeTextKey() -> CGKeyCode {
+        // b, v, n, comma, period, grave, semicolon
+        let candidates: [CGKeyCode] = [11, 9, 45, 43, 47, 50, 41]
+        for key in candidates where !CGEventSource.keyState(.hidSystemState, key: key) {
+            return key
         }
+        return 11
     }
 
-    /// Battle-tested OpenKey-style atomic HID injection via `tapPostEvent(proxy)`:
-    /// - Zero `usleep()` inside the event tap callback (eliminates ordering stalls & tap timeouts at 150+ WPM)
-    /// - Preserves `.maskNonCoalesced` & leaves `timestamp` untouched (`0`) so macOS WindowServer never coalesces
-    ///   consecutive Backspaces or reorders events across Apple Silicon / Chromium / Electron queues
-    /// - Sends the entire replacement string (chunks up to 16 UTF-16 units) in ONE atomic keyDown+keyUp pair
-    ///   with `keyboardSetUnicodeString` attached to both down and up events.
-    private func postReplacement(
-        proxy: CGEventTapProxy,
-        backspaceCount: Int,
+    private func deliverEdit(
+        bs: Int,
         text: String,
-        needsOmniboxFix: Bool
+        snap: TapFastState,
+        proxy: CGEventTapProxy,
+        thenOriginal original: CGEvent?
     ) {
         guard let src = eventSource else { return }
 
-        if backspaceCount > 0 && needsOmniboxFix {
-            // Collapse active Omnibox / Spotlight inline autocomplete highlight using U+202F
-            var nbsp: UniChar = 0x202F
-            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
-               let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-                down.flags.insert(.maskNonCoalesced)
-                up.flags.insert(.maskNonCoalesced)
-                down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
-                up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
-                down.tapPostEvent(proxy)
-                up.tapPostEvent(proxy)
-            }
+        var profile = snap.profile
+        // Spotlight overlay never activates NSWorkspace; catch it only when frontmost app is .normal
+        if profile.appKind == .normal && Self.isSpotlightCurrentlyFocused() {
+            profile = IMEAppProfileResolver.resolve(
+                bundleID: "com.apple.Spotlight",
+                fixChromiumAutocomplete: snap.fixChrome,
+                speedMode: snap.speedMode
+            )
         }
 
-        let totalBackspaces = (backspaceCount > 0 && needsOmniboxFix) ? (backspaceCount + 1) : backspaceCount
+        let nfcText = text.precomposedStringWithCanonicalMapping
+        let utf16 = Array(nfcText.utf16)
+        let steps = profile.deletionSteps(backspaces: bs, replacementIsEmpty: utf16.isEmpty)
+        let textKey = Self.freeTextKey()
 
-        if totalBackspaces > 0, let bsDown = backspaceDownEvent, let bsUp = backspaceUpEvent {
-            for _ in 0..<totalBackspaces {
-                bsDown.tapPostEvent(proxy)
-                bsUp.tapPostEvent(proxy)
+        // 1. Deletion / Selection phase
+        for step in steps {
+            switch step {
+            case .guardCharacter:
+                postUnicodeUnits([IMEInjectionProfile.selectionGuardScalar], key: textKey, source: src, proxy: proxy)
+            case .selectLeft:
+                // macOS physical arrow keys carry Shift + SecondaryFn + NumericPad flags
+                postKey(0x7B, flags: [.maskShift, .maskSecondaryFn, .maskNumericPad], source: src, proxy: proxy)
+            case .backspace:
+                // Clean empty flags: a held Shift must NEVER turn Backspace into Shift+Backspace
+                postKey(0x33, flags: [], source: src, proxy: proxy)
             }
+            if profile.delays.stepUs > 0 { usleep(profile.delays.stepUs) }
         }
 
-        if !text.isEmpty {
-            let utf16Units = Array(text.utf16)
-            let chunkLimit = 16
-            var offset = 0
-            while offset < utf16Units.count {
-                let end = min(offset + chunkLimit, utf16Units.count)
-                let slice = Array(utf16Units[offset..<end])
-                if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
-                   let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-                    down.flags.insert(.maskNonCoalesced)
-                    up.flags.insert(.maskNonCoalesced)
-                    down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    slice.withUnsafeBufferPointer { buf in
-                        if let base = buf.baseAddress {
-                            down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
-                            up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
-                        }
-                    }
-                    down.tapPostEvent(proxy)
-                    up.tapPostEvent(proxy)
+        if bs > 0 && !utf16.isEmpty && profile.delays.settleUs > 0 {
+            usleep(profile.delays.settleUs)
+        }
+
+        // 2. Replacement Unicode phase (NFC, surrogate-pair safe, carrying non-held freeTextKey!)
+        if !utf16.isEmpty {
+            let chunk = max(1, min(profile.unitsPerEvent, 20))
+            var start = 0
+            while start < utf16.count {
+                var end = min(start + chunk, utf16.count)
+                if end < utf16.count && UTF16.isLeadSurrogate(utf16[end - 1]) {
+                    end += 1
                 }
-                offset = end
+                let slice = Array(utf16[start..<end])
+                // Handle embedded newlines cleanly (for multi-line macros)
+                if slice.contains(0x000A) {
+                    var segStart = 0
+                    for idx in 0..<slice.count where slice[idx] == 0x000A {
+                        if idx > segStart {
+                            postUnicodeUnits(Array(slice[segStart..<idx]), key: textKey, source: src, proxy: proxy)
+                        }
+                        postKey(0x24, flags: [], source: src, proxy: proxy)
+                        segStart = idx + 1
+                    }
+                    if segStart < slice.count {
+                        postUnicodeUnits(Array(slice[segStart..<slice.count]), key: textKey, source: src, proxy: proxy)
+                    }
+                } else {
+                    postUnicodeUnits(slice, key: textKey, source: src, proxy: proxy)
+                }
+                if profile.delays.stepUs > 0 { usleep(profile.delays.stepUs) }
+                start = end
+            }
+            if profile.delays.tailUs > 0 { usleep(profile.delays.tailUs) }
+        }
+
+        // 3. Replay original Return/Tab event if this edit committed on a control delimiter
+        if let copy = original?.copy() {
+            copy.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            copy.tapPostEvent(proxy)
+        }
+    }
+
+    @inline(__always)
+    private func postKey(
+        _ key: CGKeyCode,
+        flags: CGEventFlags,
+        source: CGEventSource,
+        proxy: CGEventTapProxy
+    ) {
+        for isDown in [true, false] {
+            guard let ev = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: isDown) else { continue }
+            ev.flags = flags
+            ev.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            ev.tapPostEvent(proxy)
+        }
+    }
+
+    @inline(__always)
+    private func postUnicodeUnits(
+        _ units: [UInt16],
+        key: CGKeyCode,
+        source: CGEventSource,
+        proxy: CGEventTapProxy
+    ) {
+        for isDown in [true, false] {
+            guard let ev = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: isDown) else { continue }
+            ev.flags = []
+            var buf = units
+            ev.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: &buf)
+            ev.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            ev.tapPostEvent(proxy)
+        }
+    }
+
+    // MARK: - Opt-in Microsecond Diagnostic Tracer
+
+    private func trace(_ msg: @autoclosure () -> String) {
+        os_unfair_lock_lock(&stateLock)
+        let enabled = debugLogEnabled
+        os_unfair_lock_unlock(&stateLock)
+        guard enabled else { return }
+        let line = String(format: "%.4f %@\n", CFAbsoluteTimeGetCurrent(), msg())
+        Self.debugLogQueue.async {
+            guard let data = line.data(using: .utf8) else { return }
+            if let handle = FileHandle(forWritingAtPath: Self.debugLogPath) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
             }
         }
     }

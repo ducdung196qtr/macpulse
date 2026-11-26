@@ -209,6 +209,10 @@ public final class AppViewModel: ObservableObject {
     @Published public var frontmostAppName: String = ""
     @Published public var perAppCount: Int = 0
     @Published public var imeScratchpad: String = ""
+    @Published public var isSecureInputBlocked: Bool = false
+    @Published public var secureInputHolderName: String? = nil
+    @Published public var activeTapLevelLabel: String = "Session Tap"
+    @Published public var activeInjectionBadge: String = "Tự động"
 
     private let telemetry = SystemTelemetryReader()
     private let benchmarkRunner = BenchmarkRunner()
@@ -414,6 +418,7 @@ public final class AppViewModel: ObservableObject {
                 guard let self else { return }
                 self.tapRuntimeState = state
                 self.isAccessibilityTrusted = trusted
+                self.activeTapLevelLabel = self.inputTapService.currentTapLevelLabel()
             }
         }
         inputTapService.onFrontmostAppChanged = { [weak self] bid, name in
@@ -423,6 +428,25 @@ public final class AppViewModel: ObservableObject {
                 if !bid.isEmpty && bid != selfBid {
                     self.frontmostBundleID = bid
                     self.frontmostAppName = name
+                }
+            }
+        }
+        inputTapService.onSecureInputChanged = { [weak self] blocked, holder in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isSecureInputBlocked = blocked
+                self.secureInputHolderName = holder
+            }
+        }
+        inputTapService.onInjectionStatusChanged = { [weak self] status in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.activeTapLevelLabel = status.tapLevel
+                let selfBid = Bundle.main.bundleIdentifier ?? "com.ducdung.MacPulse"
+                if !status.appBundleID.isEmpty && status.appBundleID != selfBid {
+                    self.activeInjectionBadge = "\(status.appName.isEmpty ? status.appBundleID : status.appName) • \(status.profile.method.displayBadge)"
+                } else {
+                    self.activeInjectionBadge = status.profile.method.displayBadge
                 }
             }
         }
@@ -686,9 +710,17 @@ public final class AppViewModel: ObservableObject {
 
     public var imeStatusSummary: String {
         if !isAccessibilityTrusted { return "Chưa cấp quyền Trợ năng" }
+        if isSecureInputBlocked {
+            if let holder = secureInputHolderName, !holder.isEmpty {
+                return "Tạm dừng: \(holder) đang giữ Secure Input"
+            }
+            return "Tạm dừng: macOS Secure Input đang bật (ô mật khẩu)"
+        }
         if !conflictingApps.isEmpty { return "Đang chạy song song: \(conflictingApps.map(\.name).joined(separator: ", "))" }
         if tapRuntimeState == .running {
-            return imeSettings.isEnabled ? "EventTap Active • Tiếng Việt (\(imeSettings.inputMethod.displayName))" : "EventTap Active • Chế độ English"
+            return imeSettings.isEnabled
+                ? "\(activeTapLevelLabel) • Tiếng Việt (\(imeSettings.inputMethod.displayName)) • \(activeInjectionBadge)"
+                : "\(activeTapLevelLabel) • Chế độ English"
         }
         return "Đang khởi tạo bộ gõ..."
     }

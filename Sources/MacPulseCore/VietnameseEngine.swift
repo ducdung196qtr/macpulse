@@ -58,6 +58,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
     public var autoBypassVPSAndRemote: Bool
     public var autoBypassTerminal: Bool
     public var excludedBundleIDs: [String]
+    public var injectionSpeedMode: IMEInjectionSpeedMode
 
     public static let defaultMacroTable: [String: String] = [
         "vn": "Việt Nam",
@@ -110,7 +111,8 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         autoCapitalize: Bool = false,
         autoBypassVPSAndRemote: Bool = true,
         autoBypassTerminal: Bool = true,
-        excludedBundleIDs: [String] = []
+        excludedBundleIDs: [String] = [],
+        injectionSpeedMode: IMEInjectionSpeedMode = .auto
     ) {
         self.isEnabled = isEnabled
         self.inputMethod = inputMethod
@@ -133,6 +135,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.autoBypassVPSAndRemote = autoBypassVPSAndRemote
         self.autoBypassTerminal = autoBypassTerminal
         self.excludedBundleIDs = excludedBundleIDs
+        self.injectionSpeedMode = injectionSpeedMode
     }
 
     enum CodingKeys: String, CodingKey {
@@ -157,6 +160,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         case autoBypassVPSAndRemote
         case autoBypassTerminal
         case excludedBundleIDs
+        case injectionSpeedMode
     }
 
     public init(from decoder: Decoder) throws {
@@ -182,6 +186,7 @@ public struct VietnameseSettings: Codable, Sendable, Equatable {
         self.autoBypassVPSAndRemote = try container.decodeIfPresent(Bool.self, forKey: .autoBypassVPSAndRemote) ?? true
         self.autoBypassTerminal = try container.decodeIfPresent(Bool.self, forKey: .autoBypassTerminal) ?? true
         self.excludedBundleIDs = try container.decodeIfPresent([String].self, forKey: .excludedBundleIDs) ?? []
+        self.injectionSpeedMode = try container.decodeIfPresent(IMEInjectionSpeedMode.self, forKey: .injectionSpeedMode) ?? .auto
     }
 }
 
@@ -193,10 +198,12 @@ public enum VietnameseAppDetector {
         "com.microsoft.rdc.mac",
         "com.microsoft.rdc.osx.beta",
         "com.microsoft.WindowsApp",
-        // AnyDesk, RustDesk, TeamViewer
+        // AnyDesk, RustDesk, TeamViewer, 9Remote, iPhone Mirroring
         "com.philandro.anydesk",
         "com.carriez.rustdesk",
         "com.teamviewer.TeamViewer",
+        "cc.9remote.desktop",
+        "com.apple.ScreenContinuity",
         // VNC clients
         "com.realvnc.vncviewer",
         "com.tigervnc.vncviewer",
@@ -367,6 +374,15 @@ public final class VietnameseEngine {
         case clear
     }
 
+    private struct CommittedWord: Equatable {
+        var slots: [CharSlot]
+        var tone: ToneMark
+        var toneKey: Character?
+        var rawKeys: [Character]
+        var isRestoredToRaw: Bool
+        var delimiterCount: Int
+    }
+
     public var settings: VietnameseSettings
 
     private var slots: [CharSlot] = []
@@ -381,6 +397,8 @@ public final class VietnameseEngine {
     private var undoneTone: ToneMark? = nil
     private var bracketUndone: Bool = false
     private var shouldAutoCapitalize: Bool = false
+    private var wordHistory: [CommittedWord] = []
+    private static let maxWordHistoryCount = 8
 
     public init(settings: VietnameseSettings = VietnameseSettings()) {
         self.settings = settings
@@ -394,6 +412,11 @@ public final class VietnameseEngine {
         !rawKeys.isEmpty
     }
 
+    public var hasWordHistory: Bool {
+        !wordHistory.isEmpty
+    }
+
+    /// Resets only the active word buffer (preserves word history for backspace-into-word editing).
     public func reset() {
         slots.removeAll(keepingCapacity: true)
         tone = .none
@@ -406,6 +429,89 @@ public final class VietnameseEngine {
         hornUndone = false
         undoneTone = nil
         bracketUndone = false
+    }
+
+    /// Clears both the active word buffer AND the committed word history stack.
+    /// Call on mouse clicks, arrow navigation, Cmd shortcuts, Enter, Tab, app switches, or Secure Input changes.
+    public func resetAll() {
+        reset()
+        wordHistory.removeAll(keepingCapacity: true)
+    }
+
+    /// Rehydrates the active buffer from a visible Vietnamese/ASCII word read from screen (e.g. via AX fallback
+    /// when backspacing into an already-committed word after history was cleared).
+    @discardableResult
+    public func restoreWord(_ visibleWord: String) -> Bool {
+        let normalized = visibleWord.precomposedStringWithCanonicalMapping
+        guard !normalized.isEmpty, normalized.count <= 16 else { return false }
+
+        var parsedSlots: [CharSlot] = []
+        var parsedTone: ToneMark = .none
+        var parsedRaw: [Character] = []
+
+        for ch in normalized {
+            guard let info = Self.decomposeVietnameseCharacter(ch) else {
+                return false
+            }
+            parsedSlots.append(CharSlot(base: info.base, shape: info.shape, isUpper: info.isUpper))
+            parsedRaw.append(renderChar(base: info.base, shape: .plain, tone: .none, upper: info.isUpper))
+            if info.tone != .none {
+                parsedTone = info.tone
+            }
+        }
+
+        reset()
+        slots = parsedSlots
+        tone = parsedTone
+        toneKey = Self.telexToneKey(for: parsedTone)
+        rawKeys = parsedRaw
+        return true
+    }
+
+    private static func telexToneKey(for tone: ToneMark) -> Character? {
+        switch tone {
+        case .none: return nil
+        case .acute: return "s"
+        case .grave: return "f"
+        case .hook: return "r"
+        case .tilde: return "x"
+        case .dot: return "j"
+        }
+    }
+
+    public static func decomposeVietnameseCharacter(_ ch: Character) -> (base: Character, shape: LetterShape, tone: ToneMark, isUpper: Bool)? {
+        let isUpper = ch.isUppercase
+        let lowerStr = ch.lowercased()
+        guard lowerStr.count == 1, let lower = lowerStr.first else { return nil }
+
+        if lower == "đ" {
+            return ("d", .stroke, .none, isUpper)
+        }
+        if lower >= "a" && lower <= "z" {
+            return (lower, .plain, .none, isUpper)
+        }
+
+        let rows: [(base: Character, shape: LetterShape, chars: [Character])] = [
+            ("a", .plain,      ["a", "á", "à", "ả", "ã", "ạ"]),
+            ("a", .breve,      ["ă", "ắ", "ằ", "ẳ", "ẵ", "ặ"]),
+            ("a", .circumflex, ["â", "ấ", "ầ", "ẩ", "ẫ", "ậ"]),
+            ("e", .plain,      ["e", "é", "è", "ẻ", "ẽ", "ẹ"]),
+            ("e", .circumflex, ["ê", "ế", "ề", "ể", "ễ", "ệ"]),
+            ("i", .plain,      ["i", "í", "ì", "ỉ", "ĩ", "ị"]),
+            ("o", .plain,      ["o", "ó", "ò", "ỏ", "õ", "ọ"]),
+            ("o", .circumflex, ["ô", "ố", "ồ", "ổ", "ỗ", "ộ"]),
+            ("o", .horn,       ["ơ", "ớ", "ờ", "ở", "ỡ", "ợ"]),
+            ("u", .plain,      ["u", "ú", "ù", "ủ", "ũ", "ụ"]),
+            ("u", .horn,       ["ư", "ứ", "ừ", "ử", "ữ", "ự"]),
+            ("y", .plain,      ["y", "ý", "ỳ", "ỷ", "ỹ", "ỵ"])
+        ]
+        let tones: [ToneMark] = [.none, .acute, .grave, .hook, .tilde, .dot]
+        for row in rows {
+            if let idx = row.chars.firstIndex(of: lower) {
+                return (row.base, row.shape, tones[idx], isUpper)
+            }
+        }
+        return nil
     }
 
     public func processEscape() -> KeyAction {
@@ -428,6 +534,20 @@ public final class VietnameseEngine {
 
     public func processBackspace() -> KeyAction {
         guard !rawKeys.isEmpty else {
+            // Backspace across committed delimiter(s) to re-enter the previous word for seamless editing!
+            if !wordHistory.isEmpty {
+                let lastIdx = wordHistory.count - 1
+                wordHistory[lastIdx].delimiterCount -= 1
+                if wordHistory[lastIdx].delimiterCount <= 0 {
+                    let prev = wordHistory.removeLast()
+                    reset()
+                    slots = prev.slots
+                    tone = prev.tone
+                    toneKey = prev.toneKey
+                    rawKeys = prev.rawKeys
+                    isRestoredToRaw = prev.isRestoredToRaw
+                }
+            }
             return .passthrough
         }
         if isRestoredToRaw {
@@ -478,7 +598,55 @@ public final class VietnameseEngine {
         return diffAction(from: prevRendered, to: newRendered)
     }
 
+    private func pushHistorySnapshot(
+        slots snapSlots: [CharSlot],
+        tone snapTone: ToneMark,
+        toneKey snapToneKey: Character?,
+        rawKeys snapRaw: [Character],
+        isRestoredToRaw snapRestored: Bool
+    ) {
+        guard !snapSlots.isEmpty else { return }
+        wordHistory.append(CommittedWord(
+            slots: snapSlots,
+            tone: snapTone,
+            toneKey: snapToneKey,
+            rawKeys: snapRaw,
+            isRestoredToRaw: snapRestored,
+            delimiterCount: 1
+        ))
+        if wordHistory.count > Self.maxWordHistoryCount {
+            wordHistory.removeFirst(wordHistory.count - Self.maxWordHistoryCount)
+        }
+    }
+
     public func processDelimiter(_ char: Character, allowAutoRestore: Bool = true) -> KeyAction {
+        let isLineOrTabBreak = (char == "\n" || char == "\r" || char == "\t")
+        let isHistoryTrackableDelimiter = (char == " " || ".,;:!?".contains(char))
+
+        // Track consecutive spaces/punctuation delimiters when buffer is empty so backspacing multiple spaces works cleanly
+        if slots.isEmpty && rawKeys.isEmpty {
+            if isLineOrTabBreak {
+                wordHistory.removeAll(keepingCapacity: true)
+            } else if isHistoryTrackableDelimiter && !wordHistory.isEmpty {
+                wordHistory[wordHistory.count - 1].delimiterCount += 1
+            } else {
+                wordHistory.removeAll(keepingCapacity: true)
+            }
+            if char == "." || char == "!" || char == "?" || char == "\n" {
+                shouldAutoCapitalize = true
+            } else if char != " " && char != "\t" {
+                shouldAutoCapitalize = false
+            }
+            reset()
+            return .passthrough
+        }
+
+        let committedSlots = slots
+        let committedTone = tone
+        let committedToneKey = toneKey
+        let committedRaw = rawKeys
+        let committedRestored = isRestoredToRaw
+
         defer { reset() }
         let prevRendered = render(slots: slots, tone: tone)
         let raw = String(rawKeys)
@@ -496,6 +664,12 @@ public final class VietnameseEngine {
             let endsInToneOrHorn = lowerRaw.hasSuffix("s") || lowerRaw.hasSuffix("f") || lowerRaw.hasSuffix("r") || lowerRaw.hasSuffix("x") || lowerRaw.hasSuffix("j") || lowerRaw.hasSuffix("w")
             if !(lowerRaw.count <= 3 && endsInToneOrHorn) {
                 if Self.commonEnglishWords.contains(lowerRaw) {
+                    if isHistoryTrackableDelimiter {
+                        let rawSlots = raw.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
+                        pushHistorySnapshot(slots: rawSlots, tone: .none, toneKey: nil, rawKeys: Array(raw), isRestoredToRaw: true)
+                    } else {
+                        wordHistory.removeAll(keepingCapacity: true)
+                    }
                     return .replace(backspaceCount: prevRendered.count, text: raw + String(char))
                 }
             }
@@ -507,6 +681,12 @@ public final class VietnameseEngine {
                 let dedupedStr = String(deduped)
                 let lowerDeduped = dedupedStr.lowercased()
                 if Self.commonEnglishWords.contains(lowerDeduped) {
+                    if isHistoryTrackableDelimiter {
+                        let rawSlots = dedupedStr.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
+                        pushHistorySnapshot(slots: rawSlots, tone: .none, toneKey: nil, rawKeys: Array(dedupedStr), isRestoredToRaw: true)
+                    } else {
+                        wordHistory.removeAll(keepingCapacity: true)
+                    }
                     return .replace(backspaceCount: prevRendered.count, text: dedupedStr + String(char))
                 }
             }
@@ -524,18 +704,40 @@ public final class VietnameseEngine {
                 } else {
                     finalReplacement = replacement
                 }
+                wordHistory.removeAll(keepingCapacity: true)
                 return .replace(backspaceCount: prevRendered.count, text: finalReplacement + String(char))
             }
         }
 
         guard allowAutoRestore, settings.spellCheckEnabled, !isRestoredToRaw, !slots.isEmpty else {
+            if isHistoryTrackableDelimiter {
+                pushHistorySnapshot(slots: committedSlots, tone: committedTone, toneKey: committedToneKey, rawKeys: committedRaw, isRestoredToRaw: committedRestored)
+            } else {
+                wordHistory.removeAll(keepingCapacity: true)
+            }
             return .passthrough
         }
         guard prevRendered != raw else {
+            if isHistoryTrackableDelimiter {
+                pushHistorySnapshot(slots: committedSlots, tone: committedTone, toneKey: committedToneKey, rawKeys: committedRaw, isRestoredToRaw: committedRestored)
+            } else {
+                wordHistory.removeAll(keepingCapacity: true)
+            }
             return .passthrough
         }
         if !isCompleteSyllableValidOnDelimiter(slots: slots, tone: tone) {
+            if isHistoryTrackableDelimiter {
+                let rawSlots = raw.map { CharSlot(base: Character($0.lowercased()), shape: .plain, isUpper: $0.isUppercase) }
+                pushHistorySnapshot(slots: rawSlots, tone: .none, toneKey: nil, rawKeys: Array(raw), isRestoredToRaw: true)
+            } else {
+                wordHistory.removeAll(keepingCapacity: true)
+            }
             return .replace(backspaceCount: prevRendered.count, text: raw + String(char))
+        }
+        if isHistoryTrackableDelimiter {
+            pushHistorySnapshot(slots: committedSlots, tone: committedTone, toneKey: committedToneKey, rawKeys: committedRaw, isRestoredToRaw: committedRestored)
+        } else {
+            wordHistory.removeAll(keepingCapacity: true)
         }
         return .passthrough
     }
@@ -848,7 +1050,7 @@ public final class VietnameseEngine {
     }
 
     public func simulate(_ input: String) -> String {
-        reset()
+        resetAll()
         var buffer = ""
         for ch in input {
             let action: KeyAction
@@ -1303,7 +1505,7 @@ public final class VietnameseEngine {
     }
 
     private static let validOnsets: Set<String> = [
-        "", "b", "c", "ch", "d", "đ", "g", "gh", "gi", "h", "k", "kh", "l", "m",
+        "", "b", "c", "ch", "d", "đ", "g", "gh", "gi", "h", "k", "kh", "kr", "l", "m",
         "n", "ng", "ngh", "nh", "p", "ph", "qu", "r", "s", "t", "th", "tr", "v", "x"
     ]
 
@@ -1311,10 +1513,10 @@ public final class VietnameseEngine {
     private static let composingOnlyOnsets: Set<String> = ["q"]
 
     private static let validCodas: Set<String> = [
-        "", "c", "ch", "m", "n", "ng", "nh", "p", "t"
+        "", "c", "ch", "k", "m", "n", "ng", "nh", "p", "t"
     ]
 
-    private static let stopCodas: Set<String> = ["c", "ch", "p", "t"]
+    private static let stopCodas: Set<String> = ["c", "ch", "k", "p", "t"]
 
 
 
@@ -1324,7 +1526,7 @@ public final class VietnameseEngine {
         "enh", "eu",
         "ie", "iec", "iem", "ien", "ieng", "iep", "iet", "ieu",
         "uan", "uang", "uat", "uay",
-        "ue", "uec", "uech", "uen", "uenh",
+        "ue", "uec", "uech", "uen", "uenh", "ueu",
         "uo", "uoc", "uom", "uon", "uong", "uop", "uot", "uoi", "uou",
         "uye", "uyen", "uyet",
         "ye", "yem", "yen", "yeng", "yet", "yeu",
@@ -1339,7 +1541,7 @@ public final class VietnameseEngine {
 
     private static let validRhymes: Set<String> = [
         "a", "ac", "ach", "ai", "am", "an", "ang", "anh", "ao", "ap", "at", "au", "ay",
-        "ă", "ăc", "ăm", "ăn", "ăng", "ăp", "ăt",
+        "ă", "ăc", "ăk", "ăm", "ăn", "ăng", "ăp", "ăt",
         "â", "âc", "âm", "ân", "âng", "âp", "ât", "âu", "ây",
         "e", "ec", "ech", "em", "en", "eng", "eo", "ep", "et",
         "ê", "êc", "êch", "êm", "ên", "êng", "ênh", "êp", "êt", "êu",
@@ -1349,7 +1551,7 @@ public final class VietnameseEngine {
         "oc", "oe", "oen", "oeo", "oet", "oi", "om", "on", "ong", "oo", "ooc", "oong", "op", "ot",
         "ô", "ôc", "ôi", "ôm", "ôn", "ông", "ôp", "ôt",
         "ơ", "ơc", "ơi", "ơm", "ơn", "ơp", "ơt",
-        "u", "ua", "uâ", "uân", "uâng", "uât", "uây", "uc", "uê", "uêc", "uêch", "uên", "uênh",
+        "u", "ua", "uâ", "uân", "uâng", "uât", "uây", "uc", "uê", "uêc", "uêch", "uên", "uênh", "uêu",
         "ui", "um", "un", "ung", "uô", "uôc", "uôi", "uôm", "uôn", "uông", "uôt",
         "uơ", "up", "ut", "uy", "uya", "uych", "uyê", "uyên", "uyêt", "uyn", "uynh", "uyp", "uyt", "uyu",
         "ư", "ưa", "ưc", "ưi", "ưm", "ưn", "ưng", "ưo", "ưt", "ưu",
@@ -1458,6 +1660,35 @@ public final class VietnameseEngine {
 
         if !Self.validOnsets.contains(onsetStr) {
             return false
+        }
+
+        // Standard Vietnamese orthography rules (c/k, g/gh, ng/ngh) — eliminates false accents on
+        // English words like cell, center, city, cite, cyber, get, gene, gem, ghost, kotlin, kafka.
+        if let firstVowelBase = slots[s.vowelRange].first?.base {
+            switch onsetStr {
+            case "c":
+                if firstVowelBase == "e" || firstVowelBase == "i" || firstVowelBase == "y" {
+                    return false
+                }
+            case "k":
+                if firstVowelBase == "a" || firstVowelBase == "o" || firstVowelBase == "u" {
+                    return false
+                }
+            case "g":
+                if firstVowelBase == "e" {
+                    return false
+                }
+            case "ng":
+                if firstVowelBase == "e" || firstVowelBase == "i" {
+                    return false
+                }
+            case "gh", "ngh":
+                if firstVowelBase == "a" || firstVowelBase == "o" || firstVowelBase == "u" {
+                    return false
+                }
+            default:
+                break
+            }
         }
 
         let rhymeStr = renderSlice(slots[s.vowelRange]) + renderSlice(slots[s.codaRange])

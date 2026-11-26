@@ -1915,6 +1915,187 @@ suite.test("IME 47: 'của', ua/ưa/ia words, early-tone ươ words (được/n�
     try expectEqual(vniEng.simulate("d9uo7c5 "), "được ")
 }
 
+suite.test("IME 48: 'cộng' across every Telex/VNI/QuickTelex typing order and exact KeyAction diff") {
+    let telex = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+    let quick = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, quickTelex: true))
+    let vni = VietnameseEngine(settings: VietnameseSettings(inputMethod: .vni))
+
+    for eng in [telex, quick] {
+        try expectEqual(eng.simulate("coongj "), "cộng ")
+        try expectEqual(eng.simulate("congoj "), "cộng ")
+        try expectEqual(eng.simulate("congjo "), "cộng ")
+        try expectEqual(eng.simulate("cojngo "), "cộng ")
+        try expectEqual(eng.simulate("coojng "), "cộng ")
+        try expectEqual(eng.simulate("cojong "), "cộng ")
+        try expectEqual(eng.simulate("Coongj "), "Cộng ")
+        try expectEqual(eng.simulate("COONGJ "), "CỘNG ")
+        try expectEqual(eng.simulate("Congjo "), "Cộng ")
+        try expectEqual(eng.simulate("booj coongj ddoongf thoong thoongs khoong "), "bộ cộng đồng thông thống không ")
+    }
+
+    // Exact step-by-step KeyAction contract for 'coongj' (guarantees 1 BS on 2nd 'o' and 3 BS on 'j')
+    telex.resetAll()
+    try expectEqual(telex.processCharacter("c"), .passthrough)
+    try expectEqual(telex.processCharacter("o"), .passthrough)
+    try expectEqual(telex.processCharacter("o"), .replace(backspaceCount: 1, text: "ô"))
+    try expectEqual(telex.processCharacter("n"), .passthrough)
+    try expectEqual(telex.processCharacter("g"), .passthrough)
+    try expectEqual(telex.processCharacter("j"), .replace(backspaceCount: 3, text: "ộng"))
+
+    // VNI typing orders for cộng
+    try expectEqual(vni.simulate("cong65 "), "cộng ")
+    try expectEqual(vni.simulate("co6ng5 "), "cộng ")
+    try expectEqual(vni.simulate("co5ng6 "), "cộng ")
+    try expectEqual(vni.simulate("co65ng "), "cộng ")
+    try expectEqual(vni.simulate("co56ng "), "cộng ")
+}
+
+suite.test("IME 49: Word history backspace-into-previous-word editing & screen word restore") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex))
+
+    // Backspace across single space re-enters 'cong' -> add 'oj' -> 'cộng'
+    try expectEqual(eng.simulate("cong \u{08}oj "), "cộng ")
+    // Backspace across double space re-enters 'cong' -> add 'oj' -> 'cộng'
+    try expectEqual(eng.simulate("cong  \u{08}\u{08}oj "), "cộng ")
+    // Backspace across space into 'cộng' and clear tone with 'z' -> 'công'
+    try expectEqual(eng.simulate("coongj \u{08}z "), "công ")
+    // Backspace across space into 'tieng' -> add 'es' -> 'tiếng'
+    try expectEqual(eng.simulate("tieng \u{08}es "), "tiếng ")
+    // Backspace across comma into 'duoc' -> add 'dwj' -> 'được'
+    try expectEqual(eng.simulate("duoc,\u{08}dwj "), "được ")
+
+    // Screen word rehydration (AX fallback after click/history reset)
+    eng.resetAll()
+    try expect(eng.restoreWord("công"), "Should restore visible Vietnamese NFC word 'công'")
+    try expectEqual(eng.currentWord, "công")
+    try expectEqual(eng.processCharacter("j"), .replace(backspaceCount: 3, text: "ộng"))
+    try expectEqual(eng.currentWord, "cộng")
+
+    // resetAll() must clear word history so subsequent backspace does not resurrect stale words
+    eng.resetAll()
+    try expect(!eng.hasWordHistory, "resetAll() must clear word history")
+}
+
+suite.test("IME 50: Strict Vietnamese spelling rules (c/k, g/gh, ng/ngh) & ethnic/rare rhymes") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, macroEnabled: true))
+
+    // English words protected immediately by Vietnamese orthography rules (c+e/i/y, k+a/o/u, g+e, gh+a/o/u, ng+e/i)
+    try expectEqual(eng.simulate("cell center city cite cyber "), "cell center city cite cyber ")
+    try expectEqual(eng.simulate("get gem gene geo ghost "), "get gem gene geo ghost ")
+    try expectEqual(eng.simulate("kafka karma kotlin kube "), "kafka karma kotlin kube ")
+
+    // Standard Vietnamese orthography + macros + ethnic minority names still work 100%
+    try expectEqual(eng.simulate("keos kiaf kys cas coongj ghes ghee gias gieesng nghe ngheef nghix "), "kéo kìa ký cá cộng ghé ghê giá giếng nghe nghề nghĩ ")
+    try expectEqual(eng.simulate("ko dc "), "không được ")
+    try expectEqual(eng.simulate("DDawsk Lawsk Kroong ngueeuf "), "Đắk Lắk Krông nguều ")
+}
+
+suite.test("IME 51: App-aware select-then-type profile matrix, deletion steps & ModifierChordTracker") {
+    // Antigravity & Electron apps -> selectAndReplace (Shift+← + freeTextKey, 0ms lag)
+    let agy = IMEAppProfileResolver.resolve(bundleID: "com.google.antigravity")
+    try expectEqual(agy.appKind, .electron)
+    try expectEqual(agy.method, .selectAndReplace)
+    try expectEqual(agy.useSelection, true)
+    try expectEqual(agy.clearInlineSelection, false)
+    try expectEqual(agy.delays, .zero)
+    try expectEqual(agy.deletionSteps(backspaces: 3, replacementIsEmpty: false), [.selectLeft, .selectLeft, .selectLeft])
+    // Empty replacement (pure deletion) must ALWAYS fall back to Backspace, never Shift+←
+    try expectEqual(agy.deletionSteps(backspaces: 2, replacementIsEmpty: true), [.backspace, .backspace])
+
+    // Auto-detected unknown Electron app -> selectAndReplace
+    let customElectron = IMEAppProfileResolver.resolve(bundleID: "com.example.new-electron-chat", isElectronBundle: true)
+    try expectEqual(customElectron.method, .selectAndReplace)
+    try expectEqual(customElectron.useSelection, true)
+
+    // Chrome / Brave / Safari / Spotlight -> browserGuardSelect (U+00B7 + (bs+1) × Shift+←)
+    let chrome = IMEAppProfileResolver.resolve(bundleID: "com.google.Chrome", fixChromiumAutocomplete: true)
+    try expectEqual(chrome.method, .browserGuardSelect)
+    try expectEqual(chrome.clearInlineSelection, true)
+    try expectEqual(chrome.deletionSteps(backspaces: 2, replacementIsEmpty: false), [.guardCharacter, .selectLeft, .selectLeft, .selectLeft])
+    let chromeNoFix = IMEAppProfileResolver.resolve(bundleID: "com.google.Chrome", fixChromiumAutocomplete: false)
+    try expectEqual(chromeNoFix.method, .selectAndReplace)
+    try expectEqual(chromeNoFix.clearInlineSelection, false)
+
+    // Google Docs in Chrome -> charByChar (1 UTF-16 unit per event + short pauses)
+    let gdocs = IMEAppProfileResolver.resolve(bundleID: "com.google.Chrome", windowTitle: "Báo cáo - Google Docs")
+    try expectEqual(gdocs.method, .charByChar)
+    try expectEqual(gdocs.unitsPerEvent, 1)
+    try expect(gdocs.delays.stepUs >= 2_000, "Google Docs needs >= 2ms step pause")
+
+    // Spotlight & Raycast -> browser guard select
+    try expectEqual(IMEAppProfileResolver.resolve(bundleID: "com.apple.Spotlight").method, .browserGuardSelect)
+    try expectEqual(IMEAppProfileResolver.resolve(bundleID: "com.raycast.macos").method, .browserGuardSelect)
+
+    // Remote Desktop, 9Remote, iPhone Mirroring -> 0ms passthrough
+    try expectEqual(IMEAppProfileResolver.resolve(bundleID: "com.microsoft.rdc.macos").method, .passthrough)
+    try expectEqual(IMEAppProfileResolver.resolve(bundleID: "cc.9remote.desktop").method, .passthrough)
+    try expectEqual(IMEAppProfileResolver.resolve(bundleID: "com.apple.ScreenContinuity").method, .passthrough)
+
+    // Native macOS Notes & Terminals -> backspaceFast (never Shift+← in terminals!)
+    let notes = IMEAppProfileResolver.resolve(bundleID: "com.apple.Notes")
+    try expectEqual(notes.method, .backspaceFast)
+    try expectEqual(notes.useSelection, false)
+    let warp = IMEAppProfileResolver.resolve(bundleID: "dev.warp.Warp-Stable")
+    try expectEqual(warp.method, .backspaceFast)
+    try expectEqual(warp.useSelection, false)
+
+    // Speed mode presets: .fast forces Backspace 0ms; .safe adds gentle step/settle
+    let agyFast = IMEAppProfileResolver.resolve(bundleID: "com.google.antigravity", speedMode: .fast)
+    try expectEqual(agyFast.useSelection, false)
+    try expectEqual(agyFast.delays, .zero)
+    let agySafe = IMEAppProfileResolver.resolve(bundleID: "com.google.antigravity", speedMode: .safe)
+    try expectEqual(agySafe.useSelection, true)
+    try expect(agySafe.delays.settleUs >= 4_000, "Safe mode must add settle pause")
+
+    // ModifierChordTracker: clean Ctrl+Shift fires; Ctrl+Shift+Cmd or Ctrl+Shift+key must NOT fire
+    var chord = ModifierChordTracker()
+    let ctrl: UInt64 = 1 << 18
+    let shift: UInt64 = 1 << 17
+    let cmd: UInt64 = 1 << 20
+    try expect(chord.modifiersChanged(to: ctrl) == nil)
+    try expect(chord.modifiersChanged(to: ctrl | shift) == nil)
+    try expect(chord.modifiersChanged(to: ctrl) == nil)
+    try expectEqual(chord.modifiersChanged(to: 0), ctrl | shift)
+
+    try expect(chord.modifiersChanged(to: ctrl | shift) == nil)
+    try expect(chord.modifiersChanged(to: ctrl | shift | cmd) == nil)
+    try expect(chord.modifiersChanged(to: ctrl | shift) == nil)
+    try expectEqual(chord.modifiersChanged(to: 0), ctrl | shift | cmd)
+
+    try expect(chord.modifiersChanged(to: ctrl | shift) == nil)
+    chord.keyPressed(modifiersHeldRaw: ctrl | shift)
+    try expect(chord.modifiersChanged(to: 0) == nil)
+}
+
+suite.test("IME 52: Extreme fast two-hand rollover key orders (cộng, khắc phục, đánh, việt, trường, nguyễn)") {
+    let eng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, quickTelex: true))
+
+    // 10 distinct fast two-hand rollover orders for 'cộng'
+    for seq in ["coongj ", "congoj ", "congjo ", "cojngo ", "coojng ", "cojong ", "coonjg ", "conjgo ", "conjog ", "conogj "] {
+        try expectEqual(eng.simulate(seq), "cộng ", "Rollover order '\(seq)' must yield 'cộng '")
+    }
+    // Fast rollover orders for 'khắc', 'đánh', 'việt', 'trường', 'quyết', 'nguyễn'
+    for seq in ["khawcs ", "khacws ", "khacsw ", "khascw ", "khaswc "] {
+        try expectEqual(eng.simulate(seq), "khắc ", "Rollover order '\(seq)' must yield 'khắc '")
+    }
+    for seq in ["ddanhs ", "ddasnh ", "danhds ", "dasnhd "] {
+        try expectEqual(eng.simulate(seq), "đánh ", "Rollover order '\(seq)' must yield 'đánh '")
+    }
+    for seq in ["vieetj ", "vietej ", "vietje ", "viejet ", "viejte ", "vijete "] {
+        try expectEqual(eng.simulate(seq), "việt ", "Rollover order '\(seq)' must yield 'việt '")
+    }
+    for seq in ["truwowngf ", "truowngf ", "truongwf ", "truongfw ", "truofngw "] {
+        try expectEqual(eng.simulate(seq), "trường ", "Rollover order '\(seq)' must yield 'trường '")
+    }
+    for seq in ["quyeets ", "quyetse ", "quyeste ", "quysete "] {
+        try expectEqual(eng.simulate(seq), "quyết ", "Rollover order '\(seq)' must yield 'quyết '")
+    }
+    for seq in ["nguyeenx ", "nguyexne ", "nguyense ", "nguyexen "] {
+        let expected = (seq == "nguyense ") ? "nguyến " : "nguyễn "
+        try expectEqual(eng.simulate(seq), expected, "Rollover order '\(seq)' must yield '\(expected)'")
+    }
+}
+
 suite.summaryAndExit()
 
 
