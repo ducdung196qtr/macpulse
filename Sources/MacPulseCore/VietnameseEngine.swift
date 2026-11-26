@@ -1032,6 +1032,7 @@ public final class VietnameseEngine {
                     candidate[oIdx].shapeKey = char
                 } else {
                     candidate[oIdx].shape = .horn
+                    candidate[oIdx].shapeKey = char
                 }
                 if settings.spellCheckEnabled && !isSyllablePrefixValid(slots: candidate, tone: tone) {
                     return nil
@@ -1327,7 +1328,9 @@ public final class VietnameseEngine {
         "uo", "uoc", "uom", "uon", "uong", "uop", "uot", "uoi", "uou",
         "uye", "uyen", "uyet",
         "ye", "yem", "yen", "yeng", "yet", "yeu",
-        "uu", "ưo", "ưoc", "ưoi", "ưom", "ưon", "ưong", "ưop", "ưot", "ưou"
+        "uu",
+        "ưo", "ưoc", "ưoi", "ưom", "ưon", "ưong", "ưop", "ưot", "ưou",
+        "uơc", "uơi", "uơm", "uơn", "uơng", "uơp", "uơt", "uơu"
     ]
 
     private static let inFlightEnglishRestoreWords: Set<String> = [
@@ -1378,7 +1381,7 @@ public final class VietnameseEngine {
         "regex", "string", "number", "boolean", "array", "object", "map",
         "hash", "cache", "store", "memory", "cpu", "disk", "ram", "task", "job",
         "worker", "queue", "pipe", "stream", "socket", "http", "https", "url",
-        "uri", "api", "rest", "json", "xml", "yaml", "html", "css", "sql",
+        "api", "rest", "json", "xml", "yaml", "html", "css", "sql",
         "key", "value", "field", "record", "entry", "schema", "model",
         "mock", "stub", "patch", "diff", "tag", "release", "build", "deploy",
         "ci", "cd", "spec", "suite", "runner", "lint",
@@ -1397,12 +1400,12 @@ public final class VietnameseEngine {
         "check", "deal", "super", "smart", "pro", "mini", "plus",
         "cool", "nice", "fast", "slow", "easy", "hard", "high", "low",
         "free", "vip", "hot", "top", "best", "fan", "club", "team",
-        "room", "house", "car", "bus", "bike", "play", "music",
+        "house", "car", "bus", "bike", "play", "music",
         "song", "film", "movie", "star", "show", "live", "feed",
         "share", "follow", "story", "reel", "note", "poll", "vote",
         "quiz", "meme", "trend", "viral", "blog", "vlog", "podcast", "cast",
         "broadcast", "channel", "sub", "hit", "rule", "safe", "name", "zone",
-        "rate", "gate", "tree", "blue", "mode", "role",
+        "rate", "gate", "blue", "mode", "role",
 
         // Frequently mistyped English words & developer inflections
         "tests", "testing", "tested", "tester", "testers",

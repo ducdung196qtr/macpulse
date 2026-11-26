@@ -1882,6 +1882,43 @@ suite.test("v2.0: CleanupScanner detects macOS DiagnosticReports crash logs and 
     try expectEqual(bunItem?.category, .developerBuild)
 }
 
+suite.test("IME 47: 'của', ua/ưa/ia words, early-tone ươ words (được/nước/người/cười/rượu/đường), and unblocked trê/rôm/ủi") {
+    let telexEng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .telex, quickTelex: true, smartEnglishRestore: true))
+    try expectEqual(telexEng.simulate("cuar "), "của ")
+    try expectEqual(telexEng.simulate("cura "), "của ")
+    try expectEqual(telexEng.simulate("Cuar "), "Của ")
+    try expectEqual(telexEng.simulate("CUAR "), "CỦA ")
+    try expectEqual(telexEng.simulate("\"cuar\" "), "\"của\" ")
+    try expectEqual(telexEng.simulate("cuwar "), "cửa ")
+    try expectEqual(telexEng.simulate("cuarw "), "cửa ")
+    try expectEqual(telexEng.simulate("muaf luas luaj chuaf dduax "), "mùa lúa lụa chùa đũa ")
+    try expectEqual(telexEng.simulate("kiaf mias ddiax nghiax "), "kìa mía đĩa nghĩa ")
+
+    // Early-tone ươ typing orders that previously failed due to missing uơ* composing rhymes
+    try expectEqual(telexEng.simulate("dduojwc "), "được ")
+    try expectEqual(telexEng.simulate("ddujowc "), "được ")
+    try expectEqual(telexEng.simulate("nuoswc "), "nước ")
+    try expectEqual(telexEng.simulate("nusowc "), "nước ")
+    try expectEqual(telexEng.simulate("truoswc "), "trước ")
+    try expectEqual(telexEng.simulate("ngufowi "), "người ")
+    try expectEqual(telexEng.simulate("nguofwi "), "người ")
+    try expectEqual(telexEng.simulate("cuofwi "), "cười ")
+    try expectEqual(telexEng.simulate("ruojwu "), "rượu ")
+    try expectEqual(telexEng.simulate("dduofwng "), "đường ")
+
+    // Real Vietnamese words no longer hijacked by smartEnglishRestore
+    try expectEqual(telexEng.simulate("tree "), "trê ")
+    try expectEqual(telexEng.simulate("room "), "rôm ")
+    try expectEqual(telexEng.simulate("uri "), "ủi ")
+    try expectEqual(telexEng.simulate("uir "), "ủi ")
+
+    // VNI support for của & được
+    let vniEng = VietnameseEngine(settings: VietnameseSettings(inputMethod: .vni))
+    try expectEqual(vniEng.simulate("cua3 "), "của ")
+    try expectEqual(vniEng.simulate("cu3a "), "của ")
+    try expectEqual(vniEng.simulate("d9uo7c5 "), "được ")
+}
+
 suite.summaryAndExit()
 
 
