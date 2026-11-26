@@ -105,7 +105,8 @@ public final class MacInputTapService {
     }
 
     private var eventSource: CGEventSource?
-    private var lastSyntheticTimestamp: UInt64 = 0
+    private var backspaceDownEvent: CGEvent?
+    private var backspaceUpEvent: CGEvent?
 
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
@@ -156,8 +157,22 @@ public final class MacInputTapService {
             isBrowserApp: isBrowser,
             isOmniboxFocused: alwaysOmnibox
         )
-        // Use private state event source so synthetic events NEVER contaminate hardware HID device state
-        self.eventSource = CGEventSource(stateID: .privateState)
+        // Use private state event source so synthetic events NEVER contaminate hardware HID device state.
+        // Pre-allocate reusable Backspace down/up events (exact OpenKey architecture):
+        // preserve default private flags + .maskNonCoalesced and leave timestamp untouched (0).
+        let src = CGEventSource(stateID: .privateState)
+        self.eventSource = src
+        if let src {
+            let bsDown = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true)
+            bsDown?.flags.insert(.maskNonCoalesced)
+            bsDown?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            self.backspaceDownEvent = bsDown
+
+            let bsUp = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false)
+            bsUp?.flags.insert(.maskNonCoalesced)
+            bsUp?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+            self.backspaceUpEvent = bsUp
+        }
         if isBrowser && !alwaysOmnibox && frontPID > 0 {
             scheduleOmniboxFocusRefresh(pid: frontPID, bundleID: frontBid, delayMs: 0)
         }
@@ -593,6 +608,8 @@ public final class MacInputTapService {
             | (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)
+            | (1 << CGEventType.leftMouseDragged.rawValue)
+            | (1 << CGEventType.rightMouseDragged.rawValue)
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         guard let port = CGEvent.tapCreate(
@@ -645,7 +662,7 @@ public final class MacInputTapService {
             return Unmanaged.passUnretained(event)
         }
 
-        if type == .leftMouseDown || type == .rightMouseDown {
+        if type == .leftMouseDown || type == .rightMouseDown || type == .leftMouseDragged || type == .rightMouseDragged {
             os_unfair_lock_lock(&stateLock)
             let snap = fastState
             let pid = currentAppPID
@@ -890,114 +907,78 @@ public final class MacInputTapService {
         case .passthrough:
             return Unmanaged.passUnretained(originalEvent)
         case .replace(let backspaceCount, let text):
-            if backspaceCount == 0, text.count == 1 {
-                // In-place replacement: override Unicode string of current keyDown directly!
-                // Zero synthetic events, zero backspaces, zero delay, works 100% natively in all text fields!
-                var utf16 = Array(text.utf16)
-                originalEvent.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                return Unmanaged.passUnretained(originalEvent)
-            }
             postReplacement(
                 proxy: proxy,
                 backspaceCount: backspaceCount,
                 text: text,
-                baseTimestamp: originalEvent.timestamp,
                 needsOmniboxFix: needsOmniboxFix
             )
             return nil
         }
     }
 
-    @inline(__always)
-    private func nextMonotonicTimestamp(minBase: UInt64 = 0) -> UInt64 {
-        // CGEventTimestamp is in NANOSECONDS since boot (DispatchTime.now().uptimeNanoseconds),
-        // NOT mach_absolute_time() ticks (which are 41.67x smaller on Apple Silicon!).
-        let nowNs = DispatchTime.now().uptimeNanoseconds
-        let floorNs = max(nowNs, minBase)
-        let next = floorNs > lastSyntheticTimestamp ? floorNs : (lastSyntheticTimestamp &+ 1_000)
-        lastSyntheticTimestamp = next
-        return next
-    }
-
-    /// Precision sub-millisecond HID event injection via synchronous FIFO `tapPostEvent(proxy)`.
-    /// Uses true nanosecond timestamps (Apple Silicon safe) and minimal micro-pacing (~0.3–1.2ms total)
-    /// so Chromium, Electron, React, and AppKit process every Backspace strictly before Unicode insertion
-    /// without ever causing perceived lag or `.tapDisabledByTimeout`.
+    /// Battle-tested OpenKey-style atomic HID injection via `tapPostEvent(proxy)`:
+    /// - Zero `usleep()` inside the event tap callback (eliminates ordering stalls & tap timeouts at 150+ WPM)
+    /// - Preserves `.maskNonCoalesced` & leaves `timestamp` untouched (`0`) so macOS WindowServer never coalesces
+    ///   consecutive Backspaces or reorders events across Apple Silicon / Chromium / Electron queues
+    /// - Sends the entire replacement string (chunks up to 16 UTF-16 units) in ONE atomic keyDown+keyUp pair
+    ///   with `keyboardSetUnicodeString` attached to both down and up events.
     private func postReplacement(
         proxy: CGEventTapProxy,
         backspaceCount: Int,
         text: String,
-        baseTimestamp: UInt64,
         needsOmniboxFix: Bool
     ) {
         guard let src = eventSource else { return }
 
         if backspaceCount > 0 && needsOmniboxFix {
             // Collapse active Omnibox / Spotlight inline autocomplete highlight using U+202F
-            // (Narrow No-Break Space, Grapheme_Cluster_Break=Other — never fuses with preceding char).
             var nbsp: UniChar = 0x202F
-            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
-                down.flags = []
-                down.timestamp = nextMonotonicTimestamp(minBase: baseTimestamp)
+            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
+               let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+                down.flags.insert(.maskNonCoalesced)
+                up.flags.insert(.maskNonCoalesced)
                 down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
-                down.tapPostEvent(proxy)
-            }
-            if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-                up.flags = []
-                up.timestamp = nextMonotonicTimestamp(minBase: baseTimestamp)
                 up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
+                up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &nbsp)
+                down.tapPostEvent(proxy)
                 up.tapPostEvent(proxy)
             }
-            usleep(180)
         }
 
         let totalBackspaces = (backspaceCount > 0 && needsOmniboxFix) ? (backspaceCount + 1) : backspaceCount
 
-        if totalBackspaces > 0 {
-            for idx in 0..<totalBackspaces {
-                if let down = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) {
-                    down.flags = []
-                    down.timestamp = nextMonotonicTimestamp(minBase: baseTimestamp)
-                    down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    down.tapPostEvent(proxy)
-                }
-                if let up = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) {
-                    up.flags = []
-                    up.timestamp = nextMonotonicTimestamp(minBase: baseTimestamp)
-                    up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    up.tapPostEvent(proxy)
-                }
-                if idx + 1 < totalBackspaces {
-                    usleep(180)
-                }
-            }
-            // Critical boundary settle: let Chromium/Electron finish deleteBackward: before insertText:
-            if !text.isEmpty {
-                usleep(300)
+        if totalBackspaces > 0, let bsDown = backspaceDownEvent, let bsUp = backspaceUpEvent {
+            for _ in 0..<totalBackspaces {
+                bsDown.tapPostEvent(proxy)
+                bsUp.tapPostEvent(proxy)
             }
         }
 
         if !text.isEmpty {
-            let chars = Array(text)
-            for (idx, ch) in chars.enumerated() {
-                var utf16 = Array(String(ch).utf16)
-                if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
-                    down.flags = []
-                    down.timestamp = nextMonotonicTimestamp(minBase: baseTimestamp)
+            let utf16Units = Array(text.utf16)
+            let chunkLimit = 16
+            var offset = 0
+            while offset < utf16Units.count {
+                let end = min(offset + chunkLimit, utf16Units.count)
+                let slice = Array(utf16Units[offset..<end])
+                if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
+                   let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+                    down.flags.insert(.maskNonCoalesced)
+                    up.flags.insert(.maskNonCoalesced)
                     down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
-                    down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-                    down.tapPostEvent(proxy)
-                }
-                if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-                    up.flags = []
-                    up.timestamp = nextMonotonicTimestamp(minBase: baseTimestamp)
                     up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMagic)
+                    slice.withUnsafeBufferPointer { buf in
+                        if let base = buf.baseAddress {
+                            down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
+                            up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
+                        }
+                    }
+                    down.tapPostEvent(proxy)
                     up.tapPostEvent(proxy)
                 }
-                if idx + 1 < chars.count {
-                    usleep(150)
-                }
+                offset = end
             }
         }
     }
